@@ -136,8 +136,12 @@ def Sitebuilder(flog_fname, df_flog, index, frow, check, site, project, node, ar
     dname    = f"{frow.Year:02d}{frow.Month:02d}{frow.Day:02d}"
     folder  = f"./{node["name"]}/{project}/{sitename}/{frow.Sensor}/{dname}"
     for runNo in np.arange(frow.Runs):
-        for fldr in ["Tier0_raw", "Tier1_proc", "Tier2_traits"]:
+        for fldr in ["T0_raw", "T1_proc", "T2_traits"]:
             pymkdir(f"{folder}/run_{runNo:02d}/{fldr}")
+
+        sensors_QC = ["GOBI", "CALVIS"] # Add more sensors with QC data here
+        if frow.Sensor in sensors_QC:
+            pymkdir(f"{folder}/run_{runNo:02d}/T1_proc/QC_data")
     
 	# +++++ Make a log file +++++
     if frow.MakeNotesFile == True:
