@@ -712,31 +712,33 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # +++++ Check the paths and set exc path to the root of the git folder +++++
-    path = os.getcwd()
-    try:
-        git_repo = git.Repo(path, search_parent_directories=True)
-        git_root = git_repo.git.rev_parse("--show-toplevel")
-        # # +++++ Check if the repo is up to date +++++
-        repo = git.Repo(git_root)
-
-    except git_exc.InvalidGitRepositoryError as err:
-        # ========== Check if path is provided ==========
-        if not args.path is None:
+    # If --path is provided, use it regardless of git repo status
+    if args.path is not None:
+        git_root = args.path
+        # Try to check if the provided path is within a git repo
+        try:
+            repo = git.Repo(git_root, search_parent_directories=True)
+        except git_exc.InvalidGitRepositoryError:
             repo = None
-            git_root = path
-        else:
+    else:
+        # Otherwise, try to find the git root
+        path = os.getcwd()
+        try:
+            git_repo = git.Repo(path, search_parent_directories=True)
+            git_root = git_repo.git.rev_parse("--show-toplevel")
+            repo = git.Repo(git_root)
+        except git_exc.InvalidGitRepositoryError as err:
             raise git_exc.InvalidGitRepositoryError(
                 f"This script was called from an unknown path ({path}). Must be in a git repo or provide a valid --path argument. Original error: {err}"
             ) from err
-    finally:
-        sys.path.append(git_root)
-        os.chdir(git_root)
-        path = pathlib.Path(git_root)
-
+    
     # ========= Check if the provided path exists ==========
+    sys.path.append(git_root)
+    os.chdir(git_root)
+    path = pathlib.Path(git_root)
+    
     if not path.is_dir():
         raise NotADirectoryError(f"The provided path does not exist: {path}")
-
 
 
     # ========== Parse Args to main function ==========
