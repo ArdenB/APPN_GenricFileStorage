@@ -710,7 +710,7 @@ if __name__ == '__main__':
     parser.add_argument("--save-dir", type=str, default=None, help="Also save a copy of each extracted spectra file into this directory. Creates the directory if it doesn't exist. Useful for sharing extracted spectra with collaborators or keeping a central record.")
     parser.add_argument("--load-dir", type=str, default=None, help="Load previously extracted spectra files from this folder (e.g. data received from other nodes). Loaded files are appended to the QC list for plotting and can also be copied via --save-dir.")
     parser.add_argument("-v", "--verbose", default=False, action="store_true", help="Enable verbose output for debugging and additional information during processing.")
-    parser.add_argument("--no-radiance-check", default=False, action="store_true", help="Disable the reflectance vs radiance range check (value < 100). Useful when processing data known to be in reflectance units.")
+    parser.add_argument("--no-radiance-check", default=True, action="store_false", help="Disable the reflectance vs radiance range check (value < 100). Useful when processing data known to be in reflectance units.")
     args = parser.parse_args()
 
     # +++++ Check the paths and set exc path to the root of the git folder +++++
