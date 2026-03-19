@@ -416,6 +416,9 @@ def extract_panel_spectra(
             raise ValueError(f"Shapefile {panel['path']} does not have the expected columns {expected_columns}. Found columns: {shpdf.columns}. Please check the shapefile structure and ensure it has the required columns.")
             # breakpoint()
 
+    if shpdf.crs is None:
+        raise ValueError(f"Shapefile {panel['path']} does not have a CRS defined. Please set a CRS on the shapefile before running this script.")
+
     QC_tables: List[pd.DataFrame] = []
 
     # ========== Open dataset(s) ==========
@@ -427,7 +430,11 @@ def extract_panel_spectra(
                 continue
         elif not ras["exists"] or args.force:
             # In the future this will open the file
-            _process_raster(ras, shpdf, panel)
+            try:
+                _process_raster(ras, shpdf, panel)
+            except Exception as er:
+                tqdm.write(f"Error processing raster {ras['InputRaster']}: {er}. Skipping raster.")
+                continue
         # ========== Load the data ==========
         try:
             if args.type == "csv":
@@ -550,12 +557,19 @@ def _process_raster(
     Returns
     -------
     None
+
+    Raises
+    ------
+    ValueError
+        If the raster does not have a CRS defined.
     """
     # +++++ open the raster dataset +++++
     tqdm.write(f"Processing raster: {ras['InputRaster']} started at {pd.Timestamp.now()}. This may take a while for large rasters, but will be printed to the console when finished.")
-    ds         = rioxarray.open_rasterio(ras["InputRaster"])
+    ds  = rioxarray.open_rasterio(ras["InputRaster"])
+    crs = ds.rio.crs # type: ignore
+    if crs is None:
+        raise ValueError(f"Raster {ras['InputRaster']} does not have a CRS defined. Please check the raster file and ensure it has a defined CRS.")
     ds_clipped = ds.rio.clip(shpdf.geometry.apply(mapping), shpdf.crs, drop=True) # type: ignore
-    crs        = ds.rio.crs # type: ignore
 
     # +++++ Convert to DataFrame, handling multi-band data +++++
     df_xr      = ds_clipped.to_dataframe(name="value").reset_index()
@@ -627,6 +641,7 @@ def locate_qc_panels(
     print(f"Scanning directory for panel files and rasters. {pd.Timestamp.now()}")
 
     files = list(path.rglob("*QC_*_Panel*.shp"))	
+    # breakpoint()
     if len(files) == 0:
         raise ValueError(f"No QC panel shapefiles found in {path}. Please check the path and file naming conventions. Expected pattern: *QC_*_Panel*.shp")
     pan_list    = [] # List of dicts with information about the panel files
@@ -721,6 +736,7 @@ if __name__ == '__main__':
     parser.add_argument("--load-dir", type=str, default=None, help="Load previously extracted spectra files from this folder (e.g. data received from other nodes). Loaded files are appended to the QC list for plotting and can also be copied via --save-dir.")
     parser.add_argument("-v", "--verbose", default=False, action="store_true", help="Enable verbose output for debugging and additional information during processing.")
     parser.add_argument("--no-radiance-check", default=False, action="store_true", help="Disable the reflectance vs radiance range check (value < 100). Useful when processing data known to be in reflectance units.")
+    
     args = parser.parse_args()
 
     # +++++ Check the paths and set exc path to the root of the git folder +++++
@@ -751,6 +767,7 @@ if __name__ == '__main__':
     
     if not path.is_dir():
         raise NotADirectoryError(f"The provided path does not exist: {path}")
+
 
 
     # ========== Parse Args to main function ==========
