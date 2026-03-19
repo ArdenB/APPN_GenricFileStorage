@@ -126,8 +126,11 @@ def main(
     if args.save_dir is not None:
         save_spectra_copies(QC_list, pathlib.Path(args.save_dir), args.type)
 
-    if not args.skipplot and QC_list:
-        plot_panel_spectra(QC_list)
+    if not args.skipplot:
+        if len(QC_list) > 0:
+            plot_panel_spectra(QC_list)
+        else:
+            print("No spectra data available to plot. Ensure that the panel extraction step produced output files or that valid spectra files were loaded from --load-dir.")
 
     # TO DO LIST, in order of priority:
 
@@ -361,6 +364,12 @@ def load_external_spectra(
             tqdm.write(
                 f"File {fpath.name} is missing required columns {missing}. Skipping."
             )
+            skipped += 1
+            continue
+
+        # +++++ Make sure the dataframe has rows +++++
+        if df.empty:
+            tqdm.write(f"File {fpath.name} has no rows. Skipping.")
             skipped += 1
             continue
 
