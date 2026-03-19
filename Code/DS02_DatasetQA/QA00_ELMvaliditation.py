@@ -156,11 +156,18 @@ def plot_panel_spectra(QC_list: List[pd.DataFrame]) -> None:
     -------
     None
     """
+    # ========== Deal with float vs int for values ==========
+    # Normalise all tables to 0-1 float reflectance. Tables with int values
+    # (0-10000 scale) are converted by dividing by 10000.0.
+    for i, tbl in enumerate(QC_list):
+        if np.issubdtype(tbl["value"].dtype, np.integer): # type: ignore
+            QC_list[i] = tbl.assign(value=tbl["value"] / 10000.0)
+
     # ========== Combine the DataFrames in QC_list into a single DataFrame for plotting ==========
     df = pd.concat(QC_list, ignore_index=True)
     df["group"]         = df.groupby(["date", "node", "site", "run", "gpro_nu"]).ngroup()
     df["date_site_run"] = df["date"].astype(str) + " g" + df["group"].astype(str)
-    df["residual_per"]  = (df["value"] - df["Panel_ref"]*100)/100
+    df["residual_per"]  = (df["value"] - (df["Panel_ref"]/100.0) )* 100.0 # to get as a percentage of valid range
 
     # ========== Create a dict of bands that can be cut ==========
     bad_bands = ({
