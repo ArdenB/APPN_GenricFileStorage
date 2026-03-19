@@ -491,7 +491,7 @@ def _check_table_structure(panel, ras, df):
         if df["value"].max() < 100:
             warn.warn(f"Maximum value in DataFrame for raster {ras['InputRaster']} is less than 100. This may indicate that the values are in reflectance rather than radiance, which is unexpected for this sensor. Please check the processing step and ensure that the correct values are being extracted. Skipping file.")
             valid = False
-    # breakpoint()
+            # breakpoint()
     return df, valid
 
     # required_columns = {
