@@ -164,12 +164,14 @@ workspace_root/
             └── sensor_name/          # e.g., GOBI, CALVIS
                 └── YYYYMMDD/         # date folder
                     └── run_name/     # e.g., Run01
-                        ├── *QC_*_Panel*.shp  # Panel shapefile
-                        ├── *.gpro/
-                        │   └── products/
-                        │       ├── *_VNIR_Orthomosaic.bin
-                        │       └── *_SWIR_Orthomosaic.bin (CALVIS only)
-                        └── QC_Spectral_Tables/    # Output directory (created by script)
+                        └── T1_proc/
+                            ├── QC_data/
+                            │   ├── *QC_*_Panel*.shp  # Panel shapefile
+                            │   └── QC_Spectral_Tables/    # Output directory (created by script)
+                            └── *.gpro/
+                                └── products/
+                                    ├── *_VNIR_Orthomosaic.bin
+                                    └── *_SWIR_Orthomosaic.bin (CALVIS only)
 ```
 
 ### Required Files
