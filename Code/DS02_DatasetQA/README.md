@@ -248,9 +248,10 @@ Bad bands are automatically identified and can be excluded from plots:
 - Check that `.gpro/products/` folders contain orthomosaic `.bin` files
 - Verify file naming: `*_VNIR_Orthomosaic.bin` or `*_SWIR_Orthomosaic.bin`
 
-**"Maximum value is less than 100"**
-- GOBI/CALVIS should have values 0-100 (percent reflectance scaled by 100)
-- Check if raster preprocessing converted to 0-1 scale incorrectly
+**"Maximum value falls in the radiance range (0-50 int)"**
+- GOBI/CALVIS reflectance values should be either int 0-10000 or float 0-1
+- Values between 1 and 50 suggest raw radiance rather than reflectance
+- Check if raster preprocessing applied the correct reflectance conversion
 
 **"Could not read output file"**
 - Match `--type` argument to existing file format
