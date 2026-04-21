@@ -1,6 +1,8 @@
 # DataStorage Project
 
-This repository provides a data structure and automation scripts for managing data storage across APPN application nodes. It is designed to streamline and automate the creation of folders, project logs, and metadata files for research projects, sites, and sensor platforms.
+📖 **[Project Wiki](https://github.com/ArdenB/APPN_GenricFileStorage/wiki)**
+
+This repository provides a data structure and automation scripts for managing data storage across APPN nodes. It is designed to streamline and automate the creation of folders, project logs, and metadata files for research projects, sites, and sensor platforms. It is tailored for the field MPU infrastructure.
 
 ## Features
 
@@ -17,7 +19,7 @@ This repository provides a data structure and automation scripts for managing da
    ```bash
    git clone <repo-url>
    ```
-2. **Setup a Conda environemnt**
+2. **Setup a Conda environment**
    ```bash
    conda create -n datastorage python=3.12 numpy pandas pyyaml gitpython git
    conda activate datastorage

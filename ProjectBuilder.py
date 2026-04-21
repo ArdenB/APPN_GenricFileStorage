@@ -17,6 +17,8 @@ import sys
 import git
 import argparse
 import pathlib
+from git import exc as git_exc
+from collections import OrderedDict
 
 # ==============================================================================
 # ========== Import packages ==========
@@ -41,10 +43,10 @@ def main(args, repo):
     # +++++ Loop over each node +++++
     for node in nodeinfo["nodes"]:
         # +++++ Check the folders and the project log +++++
-        df, gitmod  = NodeChecker(args, node, gitmod)
+        df, gitmod  = NodeChecker(args, node, gitmod, repo)
 
         # ========== Make the column names for the csv file ==========
-        colnames = ["Year", "Month", "Day", "Sensor", "Technician", "Runs", "Site", "MakeNotesFile", "CheckSum"]
+        colnames = ["Year", "Month", "Day", "Sensor", "Technician", "Runs", "Site", "MakeNotesFile", "MakeTableFile", "CheckSum"]
 
         # ========== Check if there are any project ==========
         if df.empty:
@@ -144,8 +146,67 @@ def Sitebuilder(flog_fname, df_flog, index, frow, check, site, project, node, ar
             pymkdir(f"{folder}/run_{runNo:02d}/T1_proc/QC_data")
     
 	# +++++ Make a log file +++++
-    if frow.MakeNotesFile == True:
+    # Default behaviour: create the notes file unless MakeNotesFile is explicitly False.
+    # Treat True, empty/blank, NaN, or missing values as True.
+    make_notes = frow.MakeNotesFile
+    if isinstance(make_notes, str):
+        make_notes_str = make_notes.strip().lower()
+        skip_notes = make_notes_str in ("false", "f", "0", "no", "n")
+    elif pd.isna(make_notes):
+        skip_notes = False
+    else:
+        skip_notes = (make_notes is False) or (make_notes == 0)
+    make_notes_resolved = not skip_notes
+    if make_notes_resolved:
         pathlib.Path(f"{folder}/FieldNotes.txt").touch()
+
+    # +++++ Make a run overview table +++++
+    # Same default behaviour as MakeNotesFile: create unless explicitly False.
+    make_table = frow.MakeTableFile
+    if isinstance(make_table, str):
+        make_table_str = make_table.strip().lower()
+        skip_table = make_table_str in ("false", "f", "0", "no", "n")
+    elif pd.isna(make_table):
+        skip_table = False
+    else:
+        skip_table = (make_table is False) or (make_table == 0)
+    make_table_resolved = not skip_table
+    if make_table_resolved:
+        run_overview_fname = f"{folder}/RunOverview.csv"
+        # Don't overwrite existing tables; users may have added extra columns.
+        if not os.path.isfile(run_overview_fname):
+            run_names = [f"run_{runNo:02d}" for runNo in np.arange(frow.Runs)]
+            df_runs = pd.DataFrame({"RunFailed": [False] * len(run_names)}, index=run_names)
+            df_runs.index.name = "Run"
+            df_runs.to_csv(run_overview_fname)
+            if not args.no_git:
+                repo.git.add(run_overview_fname)
+                gitmod = True
+
+    # +++++ Write the resolved True/False back into the field log +++++
+    # Compare against the existing values to detect whether the CSV needs updating.
+    flag_updates = {
+        "MakeNotesFile": make_notes_resolved,
+        "MakeTableFile": make_table_resolved,
+    }
+    needs_update = False
+    for col, resolved in flag_updates.items():
+        current_val = df_flog.at[index, col]
+        if (
+            pd.isna(current_val)
+            or not isinstance(current_val, bool)
+            or current_val != resolved
+        ):
+            # Ensure the column can hold bool values (avoids FutureWarning when
+            # the column was inferred as float64 due to NaNs in the CSV).
+            if df_flog[col].dtype != object:
+                df_flog[col] = df_flog[col].astype(object)
+            df_flog.at[index, col] = resolved
+            needs_update = True
+    if needs_update:
+        # Recompute checksum since the resolved flags are part of the hashed columns.
+        updated_row = df_flog.loc[index].drop("CheckSum")
+        check = float(pd.util.hash_pandas_object(updated_row).sum() % 100000000)
     
     # ========== Add the Check Sum and add the file to git ==========
     if not check is None:
@@ -203,7 +264,10 @@ def projBuilder(project, node, colnames, args, repo, gitmod):
     # ========== Load a project yaml ==========
     psyl_fname = f"./{node["name"]}/{project}/ProjectSummary.yaml"
     ProjectInfo, gitmod = _projYAML(project, psyl_fname, args, repo, gitmod)
-    
+
+    # Ensure ProjectInfo is treated as a dictionary
+    assert isinstance(ProjectInfo, dict), f"ProjectInfo must be a dictionary, got {type(ProjectInfo)}"
+
 
     # ========== Check the field log ==========
     flog_fname = f"./{node["name"]}/{project}/FieldLog.csv"
@@ -227,14 +291,20 @@ def projBuilder(project, node, colnames, args, repo, gitmod):
 
     # ========== Make sure folders exist of all of the sites ==========
     Site_names = []
-    for site in ProjectInfo["project"]["sites"]:
-        if not site["name"] == "" and not site["year"] == -9999:
+    project_data = ProjectInfo.get("project", {})
+    sites = project_data.get("sites", []) # type: ignore
+
+    for site in sites:
+        # Add validation for site structure
+        if (isinstance(site, dict) and
+            site.get("name", "") != "" and
+            site.get("year", -9999) != -9999):
             # ========== To Do Sanity check a log file ==========
             # This will also need to include some ability to edit files
             # breakpoint()
             sitename = _sitenamemaker(site, psyl_fname)
             Site_names.append(sitename)
-            
+
             # +++++ Check if the site folder exists +++++
             pymkdir(f"./{node["name"]}/{project}/{sitename}")
             for fld in ["Documentation", "Code"]:
@@ -243,7 +313,7 @@ def projBuilder(project, node, colnames, args, repo, gitmod):
     return df_flog, gitmod, flog_fname, Site_names, ProjectInfo, 
 
 
-def NodeChecker(args, node, gitmod):
+def NodeChecker(args, node, gitmod, repo):
     """
     Ensure node folder and project summary CSV exist, and check for missing columns.
 
@@ -255,6 +325,8 @@ def NodeChecker(args, node, gitmod):
         Dictionary containing node information (e.g., name, SensorPlatforms).
     gitmod : bool
         Flag indicating if the git repo has been modified.
+    repo : git.Repo or None
+        GitPython Repo object for git operations, or None when --no-git is set.
 
     Returns
     -------
@@ -285,7 +357,7 @@ def NodeChecker(args, node, gitmod):
 
 
         # ========== Add the file to the github repo ========== 
-        if not args.no_git:
+        if not args.no_git and repo is not None:
             repo.git.add(pfilename)
             gitmod = True
 
@@ -294,12 +366,177 @@ def NodeChecker(args, node, gitmod):
     df = pd.read_csv(pfilename, header=0, index_col=0)
     df, gitmod = _df_col_check(df, pfilename, node["SensorPlatforms"], args, repo, gitmod, fill_val=False)
 
+    # ========== Check for project folders that exist but are missing from CSV ==========
+    node_path = f"./{node["name"]}"
+    if os.path.exists(node_path):
+        # Get all directories in the node folder
+        all_items = os.listdir(node_path)
+        project_folders = []
+
+        # Filter for project folders (start with year pattern like 2025_, 2026_)
+        # Exclude non-project items
+        exclude_items = ['Documents', 'Code', 'sync.ffs_db', '.DS_Store']
+        for item in all_items:
+            item_path = os.path.join(node_path, item)
+            # Check if it's a directory and matches project naming pattern (starts with year)
+            if os.path.isdir(item_path) and not item in exclude_items:
+                # Check if folder name starts with a 4-digit year (20XX_)
+                if len(item) > 4 and item[:4].isdigit() and item[4] == '_':
+                    project_folders.append(item)
+
+        # Compare with projects in the CSV
+        csv_projects = set(df.index.tolist())
+        folder_projects = set(project_folders)
+        missing_from_csv = folder_projects - csv_projects
+
+        if missing_from_csv:
+            print(f"WARNING: Found {len(missing_from_csv)} project folder(s) not in CSV {pfilename}: {sorted(missing_from_csv)}")
+            print(f"Please manually add these projects to the CSV file if they should be tracked.")
+
     # +++++ Check if the file has been changed git status +++++
     if not args.no_git:
         gitmod = GitChanged(repo, pfilename, gitmod)
 
     return df, gitmod
 
+
+def _defaultProjectYAML(project):
+    """
+    Generate a default project YAML structure.
+
+    Returns
+    -------
+    project_data : dict
+        Default project YAML structure.
+    """
+    project_data = {
+        "project": {
+            "ShortName": f"{project}",
+            "FullName": "",
+            "description": "",
+            "start_date": "",
+            "end_date": "",
+            "funding_source": "",
+            "status": "",
+            "ProjectCode":"",
+            "Internal":None,
+            "researcher": {
+                "FirstName": "",
+                "LastName":"",
+                "Title":"",
+                "email": "",
+                "institution": "",
+                "role": "Principal Investigator",
+                "orcid": ""
+            },
+            "sites": [
+                {
+                    "name": "",
+                    "year": -9999,  # This is a placeholder for the year
+                    "season": "",
+                    "SubLocation": "",
+                    "latitude": np.nan,
+                    "longitude": np.nan,
+                    "description": "",
+                    "ControlledEnvironment":None,
+                    "sensors": [],  # "GOBI", "HIRES", "M3M"
+                },
+            ]
+        },
+    }
+    return project_data
+
+def check_yaml_structure(proj_data, default_structure):
+    """
+    Check if proj_data has the same structure as the default YAML.
+
+    Parameters
+    ----------
+    proj_data : dict
+        The loaded project YAML data to check.
+    default_structure : dict
+        The default structure to compare against.
+
+    Returns
+    -------
+    is_valid : bool
+        True if structure matches, False otherwise.
+    missing_keys : list
+        List of missing key paths.
+    """
+    missing_keys = []
+
+    def check_nested_dict(actual, expected, path=""):
+        for key, value in expected.items():
+            current_path = f"{path}.{key}" if path else key
+
+            if key not in actual:
+                missing_keys.append(current_path)
+            elif isinstance(value, dict) and isinstance(actual[key], dict):
+                check_nested_dict(actual[key], value, current_path)
+            elif isinstance(value, list) and not isinstance(actual[key], list):
+                missing_keys.append(f"{current_path} (should be list)")
+
+    check_nested_dict(proj_data, default_structure)
+    return len(missing_keys) == 0, missing_keys
+
+def update_yaml_structure(proj_data, default_structure):
+    """
+    Update proj_data to match the default structure by adding missing keys.
+
+    Parameters
+    ----------
+    proj_data : dict
+        The project data to update.
+    default_structure : dict
+        The default structure to use as template.
+
+    Returns
+    -------
+    updated_data : dict
+        The updated project data with missing keys added.
+    """
+    def create_ordered_dict(actual, expected):
+        """Create an OrderedDict with keys in the same order as expected."""
+        ordered = OrderedDict()
+
+        # First, add all keys from expected in their original order
+        for key, default_value in expected.items():
+            if key in actual:
+                if isinstance(default_value, dict) and isinstance(actual[key], dict):
+                    # Recursively order nested dictionaries
+                    ordered[key] = create_ordered_dict(actual[key], default_value)
+                else:
+                    ordered[key] = actual[key]
+            else:
+                # Add missing key with default value
+                if isinstance(default_value, dict):
+                    ordered[key] = create_ordered_dict({}, default_value)
+                elif isinstance(default_value, list):
+                    ordered[key] = []
+                else:
+                    ordered[key] = default_value
+
+        # Then, add any extra keys from actual that aren't in expected
+        for key, value in actual.items():
+            if key not in ordered:
+                ordered[key] = value
+
+        return ordered
+
+    def convert_to_dict(obj):
+        """Recursively convert OrderedDict to regular dict."""
+        if isinstance(obj, OrderedDict):
+            return {k: convert_to_dict(v) for k, v in obj.items()}
+        elif isinstance(obj, dict):
+            return {k: convert_to_dict(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_dict(item) for item in obj]
+        else:
+            return obj
+
+    updated_data = create_ordered_dict(proj_data, default_structure)
+    return convert_to_dict(updated_data)  # Convert to regular dict recursively
 
 def _projYAML(project, pym_fn, args, repo, gitmod):
     """
@@ -332,41 +569,7 @@ def _projYAML(project, pym_fn, args, repo, gitmod):
     """
     # +++++ Check if the project yaml file already exists +++++
     if not os.path.isfile(pym_fn):
-        project_data = {
-            "project": {
-                "ShortName": f"{project}",
-                "FullName": "",
-                "description": "",
-                "start_date": "",
-                "end_date": "",
-                "funding_source": "",
-                "status": "",
-                "ProjectCode":"",
-                "Internal":None,
-                "researcher": {
-                    "FirstName": "",
-                    "LastName":"",
-                    "Title":"",
-                    "email": "",
-                    "institution": "",
-                    "role": "Principal Investigator",
-                    "orcid": ""
-                },
-                "sites": [
-                    {
-                        "name": "",
-                        "year": -9999,# This is a placeholder for the year
-                        "season": "",
-                        "SubLocation": "",
-                        "latitude": np.nan,
-                        "longitude": np.nan,
-                        "description": "",
-                        "ControlledEnvironment":None,
-                        "sensors": [],#"GOBI", "HIRES", "M3M"
-                    },
-                    ]
-            },          
-        }
+        project_data = _defaultProjectYAML(project)
         with open(pym_fn, "w") as f:
             yaml.dump(project_data, f, sort_keys=False)
         print(f"New Project YAML file created: {pym_fn}. Please edit it to add project and site information")
@@ -377,7 +580,23 @@ def _projYAML(project, pym_fn, args, repo, gitmod):
 
     # +++++ Load the yaml file +++++
     Proj_data = yaml.safe_load(open(f"{pym_fn}", "r"))
-    
+
+    # ========== Check structure and update if needed ==========
+    default_structure = _defaultProjectYAML(project)
+    is_valid, missing_keys = check_yaml_structure(Proj_data, default_structure)
+
+    if not is_valid:
+        print(f"YAML structure missing keys in {pym_fn}: {missing_keys}")
+        # Optionally update the structure
+        updated_data = update_yaml_structure(Proj_data, default_structure)
+        with open(pym_fn, "w") as f:
+            yaml.dump(updated_data, f, sort_keys=False)
+        print(f"Updated YAML structure in {pym_fn}")
+        if not args.no_git:
+            repo.git.add(pym_fn)
+            gitmod = True
+        Proj_data = updated_data
+
     # breakpoint()
     if not args.no_git:
         gitmod = GitChanged(repo, pym_fn, gitmod)
@@ -431,9 +650,20 @@ def _df_col_check(dfx, fname, colnms, args, repo, gitmod, fill_val=None):
             print(f"col missing in: {fname}. Fix applied by adding: {missing_cols}")
             for col in missing_cols:
                 dfx[col] = fill_val
+            # +++++ Invalidate any existing checksums +++++
+            # Adding columns changes the row hash, so previously stored
+            # CheckSum values would no longer match. Clearing them forces
+            # Rowchecker to recompute the checksum on the next pass instead
+            # of tripping the mismatch breakpoint.
+            if "CheckSum" in dfx.columns and (missing_cols - {"CheckSum"}):
+                dfx["CheckSum"] = np.nan
             # ===== Reorder and save =====
             dfx = dfx[colnms]
-            dfx.to_csv(fname, index=False)
+            # Preserve the original CSV layout: write the index only when the
+            # DataFrame has a named index (e.g. ProjectsSummary uses Project as
+            # the index). FieldLog-style frames have no named index and should
+            # be written without one to avoid an extra unnamed column.
+            dfx.to_csv(fname, index=dfx.index.name is not None)
         if not args.no_git:
             repo.git.add(fname)
             gitmod = True
@@ -739,11 +969,18 @@ def GitPull(repo):
 
     # TO DO: Add a way to force skip this check 
     if not pull_log == 'Already up to date.':
-        print("The remote git repo is not in sync")
-        print(f"sync log: {pull_log}")
-        print("Please rerun the script. if there are repeat errors there might be a git or connection issue. Script can be run with --no-git to skip pull")
-        breakpoint()
-        sys.exit()
+        # ========== get the file name of the script ==========
+        script_name = os.path.basename(__file__)
+        print(f"The remote git repo is not in sync. Log: {pull_log}")
+        if script_name in pull_log:
+            print(f"WARNING: The script {script_name} has been modified in the remote repo. Please restart the script to use the updated version")
+            raise SystemExit
+        elif pull_log.startswith("Updating"):
+            print(f"WARNING: The repo has been updated. ")
+        else:
+            print(f"WARNING: The repo has been updated. with unknown chane string.")
+            print("Please rerun the script. if there are repeat errors there might be a git or connection issue.  Script can be run with --no-git to skip pull")
+            sys.exit()
 
 
 # ==================================================================================
@@ -769,10 +1006,13 @@ if __name__ == '__main__':
         try:
             git_repo = git.Repo(path, search_parent_directories=True)
             git_root = git_repo.git.rev_parse("--show-toplevel")
-        except git.exc.InvalidGitRepositoryError:
-            raise git.exc.InvalidGitRepositoryError(f"This script was called from an unknown path ({path}). Must be in a git repo")
+        except git_exc.InvalidGitRepositoryError as err:
+            raise git_exc.InvalidGitRepositoryError(
+                f"This script was called from an unknown path ({path}). Must be in a git repo"
+            ) from err
         finally:
             sys.path.append(git_root)
+            os.chdir(git_root)
 
         # # +++++ Check if the repo is up to date +++++
         repo = git.Repo(git_root)
