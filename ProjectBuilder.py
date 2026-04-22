@@ -144,6 +144,12 @@ def Sitebuilder(flog_fname, df_flog, index, frow, check, site, project, node, ar
         sensors_QC = ["GOBI", "CALVIS"] # Add more sensors with QC data here
         if frow.Sensor in sensors_QC:
             pymkdir(f"{folder}/run_{runNo:02d}/T1_proc/QC_data")
+        # +++++ make a Vault folder +++++
+        # sensors with a Vault folder in T0_raw. Files placed inside Vault/
+        # are excluded from any future programmatic file cleanup/deletion.
+        sensors_vault = ["GOBI", "CALVIS"] # Add more sensors with a Vault folder here
+        if frow.Sensor in sensors_vault:
+            pymkdir(f"{folder}/run_{runNo:02d}/T0_raw/Vault")
     
 	# +++++ Make a log file +++++
     # Default behaviour: create the notes file unless MakeNotesFile is explicitly False.

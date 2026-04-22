@@ -13,7 +13,9 @@ node
 					runXX
 
 						T0_raw
+							*Vault		# GOBI / CALVIS only — excluded from programmatic cleanup
 						T1_proc
+							*QC_data	# GOBI / CALVIS only — quality-control inputs/outputs
 						T2_traits
 			*Documents
 			*code
