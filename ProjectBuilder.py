@@ -51,7 +51,11 @@ def main(args, repo):
         # ========== Check if there are any project ==========
         if df.empty:
             break # Exit the loop as ther are no projects to make files for
-        
+
+        # ========== Track whether the project summary CSV needs re-saving ==========
+        pfilename = f"./{node['name']}/{node['name']}_ProjectsSummary.csv"
+        psum_modified = False
+
         # ========== Loop over every project ==========
         for project, row in df.iterrows():
 
@@ -62,11 +66,29 @@ def main(args, repo):
             if not  df_flog.empty:
                 # +++++ Loop over each experimental day +++++
                 for index, frow in df_flog.iterrows():
+                    # +++++ Optionally auto-enable a sensor in the project summary +++++
+                    if (args.enable_sensors
+                            and isinstance(frow.Sensor, str)
+                            and frow.Sensor in row.index
+                            and row[frow.Sensor] != True):
+                        print(f"--enable-sensors: setting {project}/{frow.Sensor} = TRUE in {pfilename}")
+                        row[frow.Sensor] = True
+                        df.loc[project, frow.Sensor] = True
+                        psum_modified = True
+
                     # +++++ Sanity check the row +++++
                     check, site = Rowchecker(flog_fname, frow, row, ProjectInfo, args.historical)
 
 					# +++++ Make the site name +++++
                     df_flog, gitmod =  Sitebuilder(flog_fname, df_flog, index, frow, check, site, project, node, args, repo, gitmod)
+
+        # ========== Persist any sensor changes back to the project summary CSV ==========
+        if psum_modified:
+            df.to_csv(pfilename)
+            print(f"Updated project summary written to {pfilename}")
+            if not args.no_git and repo is not None:
+                repo.git.add(pfilename)
+                gitmod = True
 
 
     # ========== Do a git commit ==========
@@ -802,7 +824,13 @@ def Rowchecker(flog_fname, flrow, prow, ProjectInfo, historical, past_date=(pd.T
     
     # ========== Check if the sensor is valid ==========
     if not flrow.Sensor in prow[prow == True].index:
-        _ErrorMessage(f"Sensor: {flrow.Sensor} is not in the valid sensors for this project({prow[prow == True].index}). Edit Projects_Summary.csv to add sensors", flog_fname, flrow)
+        _ErrorMessage(
+            f"Sensor: {flrow.Sensor} is not in the valid sensors for this project"
+            f"({prow[prow == True].index}). Edit Projects_Summary.csv to add sensors, "
+            f"or re-run with the --enable-sensors flag to automatically set "
+            f"{flrow.Sensor} to TRUE in the project summary CSV.",
+            flog_fname, flrow,
+        )
 
     # ========== Check the number of runs ==========
     if flrow.Runs < 1:
@@ -1003,6 +1031,14 @@ if __name__ == '__main__':
     # parser.add_argument("--projects-csv", type=str, default="./Projects_Summary.csv", help="Projects summary CSV path.")
     parser.add_argument("--projectsYAML", type=str, default="./NodeSummary.yaml", help="the node yaml file with the sensors.")
     parser.add_argument("-p","--historical", action="store_true", help="Allow historical data")
+    parser.add_argument(
+        "--enable-sensors",
+        action="store_true",
+        help=("If a sensor referenced in a project's FieldLog is currently set "
+              "to FALSE in <node>_ProjectsSummary.csv, automatically flip it to "
+              "TRUE and save the CSV instead of raising an error. The sensor "
+              "must already exist as a column in the CSV."),
+    )
     
     args = parser.parse_args()
 
