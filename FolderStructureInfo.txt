@@ -1,14 +1,26 @@
 # File Structure
 
+# Repository root
+NodeSummary.yaml			# user-maintained: defines nodes and SensorPlatforms
+FolderStructureInfo.txt		# this file (reference for naming convention)
+
 node
-	
+
+	{NodeName}_ProjectsSummary.csv	# auto: boolean matrix of projects vs sensors
+
 	YYYY_ProjectDesc{_internal/external}{_Researcher}{_org} 
-		
+
+		ProjectSummary.yaml	# auto: project metadata, researcher, sites
+		FieldLog.csv		# auto: log of every field collection event
+
 		Site{_source}
 			
 			SensorPlatform
 
 				YYYYMMDD 
+
+					FieldNotes.txt		# auto (optional): free-form day notes
+					RunOverview.csv		# auto (optional): per-run status table
 
 					runXX
 
@@ -24,6 +36,12 @@ node
 		*code
 	Documents
 	code
+
+# Notes on metadata files
+# - All auto files are created and maintained by ProjectBuilder.py.
+# - FieldNotes.txt and RunOverview.csv are skipped when the corresponding
+#   FieldLog.csv row sets MakeNotesFile / MakeTableFile to False.
+# - See the wiki Key-Files page for full schema details.
 
 # Summary 
 # Separator
