@@ -7,11 +7,15 @@ files into a single output directory so they can be sent for review.
 
 Output layout
 -------------
-Each source ``.graw``/``.gpro`` folder is collapsed into a single
-labelled folder in the output directory, named
-``<SENSOR>_<KIND>_<NN>`` (e.g. ``CALVIS_GRAW_00``, ``GOBI_GPRO_03``).
-Files from the original folder (with their relative subpaths inside it)
-are copied beneath that labelled folder.
+Source folders are grouped by the run they belong to (the ``run_XX``
+folder above ``.graw``/``.gpro``). Each group becomes a labelled
+folder named ``<SENSOR>_RUN_<NN>`` (e.g. ``CALVIS_RUN_00``,
+``GOBI_RUN_03``). Inside the group folder, each source ``.graw`` /
+``.gpro`` keeps its original folder name (e.g. ``EM_4cm.graw/``,
+``EM_4cm.gpro/``) so that paired ``.graw`` and ``.gpro`` siblings from
+the same run land next to each other. Files (with their relative
+subpaths inside the original folder) are copied beneath their
+respective ``<original>.graw`` / ``<original>.gpro`` subfolder.
 
 A ``manifest.csv`` is written at the root of the output directory.
 In addition to identifying each collected folder, it records whether
@@ -19,9 +23,9 @@ the source folder follows the APPN folder structure (see
 https://github.com/ArdenB/APPN_GenricFileStorage/wiki) using
 :func:`parse_APPN_dataset_path`. Columns:
 
-``sensor, kind, number, label, source_path, output_path,
-appn_valid, appn_errors, node, project, site_folder, year, sensor_folder,
-date, run_folder, run, tier, sub_tier``.
+``sensor, kind, group_label, group_number, label, source_path,
+output_path, appn_valid, appn_errors, node, project, site_folder, year,
+sensor_folder, date, run_folder, run, tier, sub_tier``.
 
 Files collected
 ---------------
@@ -58,6 +62,7 @@ Command line
 
 import argparse
 import csv
+import re
 import shutil
 import subprocess
 import sys
@@ -77,6 +82,12 @@ from Code.functions.core_functions.parse_APPN_dataset_path import (  # noqa: E40
 )
 
 SENSOR_KEYWORDS = ('CALVIS', 'GOBI')
+
+# Matches APPN run folder names. Accepts ``run_00``, ``run00``,
+# ``Run-3``, ``RUN.12``, etc. Anything that does not look like a run
+# folder is treated as "no run folder" and the source is kept in its
+# own group (no false pairing across unrelated source folders).
+_RUN_FOLDER_RE = re.compile(r'^run[_\-\.]?\d+$', re.IGNORECASE)
 
 # (subdir relative to .graw root, glob within that subdir)
 GRAW_PATTERNS = [
@@ -276,11 +287,18 @@ def _scan_for_target_folders(root_paths):
 
 
 def _annotate_folders(folders, dest_root):
-    """Sort, label and APPN-validate each folder record in-place.
+    """Sort, group, label and APPN-validate each folder record in-place.
 
-    Each record gains the keys ``number``, ``label``, ``out_dir`` and
-    ``appn``. Labels are zero-padded to a width of at least 2 digits
-    (or wider if needed for the largest sensor/kind bucket).
+    ``.graw`` and ``.gpro`` folders that share a run (the ``run_XX``
+    folder two levels above the source) are placed in the same group
+    folder named ``<SENSOR>_RUN_<NN>``. Within a group, each source
+    folder keeps its original folder name (e.g. ``EM_4cm.graw``) so
+    paired ``.graw``/``.gpro`` siblings land next to each other.
+
+    Each record gains the keys ``group_key``, ``group_number``,
+    ``group_label``, ``label``, ``out_dir`` and ``appn``. Group
+    numbers are zero-padded to a width of at least 2 digits (or wider
+    if needed for the largest sensor bucket).
 
     Parameters
     ----------
@@ -294,22 +312,70 @@ def _annotate_folders(folders, dest_root):
     None
         The records are mutated in place.
     """
-    folders.sort(key=lambda r: (r['sensor'], r['kind'], str(r['source'])))
-
-    counters = {}
+    # Compute a stable group key per record (the run folder if we can
+    # find it, otherwise the immediate parent folder).
     for rec in folders:
-        key = (rec['sensor'], rec['kind'])
-        rec['number'] = counters.get(key, 0)
-        counters[key] = rec['number'] + 1
+        rec['group_key'] = _run_group_key(rec['source'])
 
-    max_count = max(counters.values()) if counters else 1
+    folders.sort(key=lambda r: (r['sensor'], str(r['group_key']),
+                                r['kind'], str(r['source'])))
+
+    # Assign group numbers per sensor in first-seen order.
+    group_numbers = {}        # (sensor, group_key) -> number
+    sensor_counters = {}      # sensor -> next number
+    for rec in folders:
+        key = (rec['sensor'], rec['group_key'])
+        if key not in group_numbers:
+            group_numbers[key] = sensor_counters.get(rec['sensor'], 0)
+            sensor_counters[rec['sensor']] = group_numbers[key] + 1
+        rec['group_number'] = group_numbers[key]
+
+    max_count = max(sensor_counters.values()) if sensor_counters else 1
     pad = max(2, len(str(max_count - 1)))
     for rec in folders:
-        rec['label'] = (
-            f"{rec['sensor']}_{rec['kind'].upper()}_{rec['number']:0{pad}d}"
+        rec['group_label'] = (
+            f"{rec['sensor']}_RUN_{rec['group_number']:0{pad}d}"
         )
-        rec['out_dir'] = dest_root / rec['label']
+        # Inside the group folder, keep the original folder name
+        # (which already carries the .graw/.gpro extension) so paired
+        # siblings group visually.
+        rec['label'] = f"{rec['group_label']}/{rec['source'].name}"
+        rec['out_dir'] = dest_root / rec['group_label'] / rec['source'].name
         rec['appn'] = validate_appn_path(rec['source'])
+
+
+def _run_group_key(source):
+    """Return a grouping key identifying the run a folder belongs to.
+
+    The key is the resolved path of the nearest ancestor folder whose
+    name looks like an APPN run folder (matches ``^run[_\\-\\.]?\\d+$``,
+    case-insensitive — accepts ``run_00``, ``run00``, ``Run-3`` etc.).
+    Sibling ``.graw`` and ``.gpro`` folders from the same run share
+    that ancestor and therefore the same key.
+
+    If no run-shaped ancestor is found the source's *own* resolved
+    path is returned, which means the folder ends up in a group of its
+    own (no false pairing with unrelated folders).
+
+    Parameters
+    ----------
+    source : pathlib.Path
+        Path to a ``.graw`` or ``.gpro`` folder.
+
+    Returns
+    -------
+    pathlib.Path
+        Resolved path used as the group key. Either an ancestor run
+        folder, or the source path itself when no run folder is found.
+    """
+    resolved = source.resolve()
+    # Search a small window of ancestors. The canonical layout is
+    # .../<run>/<tier>/<X.graw>, so the run is parents[1]; we allow a
+    # couple of extra levels for slight schema drift.
+    for ancestor in resolved.parents[:5]:
+        if _RUN_FOLDER_RE.match(ancestor.name):
+            return ancestor
+    return resolved
 
 
 def _print_scan_summary(folders):
@@ -718,7 +784,7 @@ def write_manifest(manifest_path, folders):
     """
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     header = [
-        'sensor', 'kind', 'number', 'label',
+        'sensor', 'kind', 'group_label', 'group_number', 'label',
         'source_path', 'output_path',
         'appn_valid', 'appn_errors',
         'node', 'project', 'site_folder', 'year', 'sensor_folder',
@@ -731,7 +797,8 @@ def write_manifest(manifest_path, folders):
             appn = rec.get('appn', {}) or {}
             errors = appn.get('errors') or []
             writer.writerow([
-                rec['sensor'], rec['kind'], rec['number'], rec['label'],
+                rec['sensor'], rec['kind'],
+                rec['group_label'], rec['group_number'], rec['label'],
                 str(rec['source']), str(rec['out_dir']),
                 bool(appn.get('valid')),
                 ' | '.join(errors),
