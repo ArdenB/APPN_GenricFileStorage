@@ -55,7 +55,18 @@ def parse_APPN_dataset_path(
         raise ValueError(f"Invalid path_level '{path_level}'. Must be one of {sorted(valid_levels)}")
 
     pth = pathlib.Path(path)
-    pth = pth.parent if pth.suffix else pth
+    # Only strip a trailing component when the path is an existing file.
+    # Folders whose name contains a '.' (e.g. ``X.graw``, ``Y.gpro``) must
+    # not be treated as files just because their name has a suffix.
+    if pth.suffix and pth.is_file():
+        pth = pth.parent
+    elif pth.suffix and not pth.exists():
+        # Path does not exist on disk: fall back to the historical
+        # behaviour (treat trailing dotted component as a file suffix)
+        # only when the suffix does not look like a known APPN folder
+        # extension.
+        if pth.suffix.lower() not in {".graw", ".gpro"}:
+            pth = pth.parent
 
     sensor_names = ({
         "GOBI", "HIRES", "M3M", "CALVIS", "PHENOMATE", "MOLE", "TEMS",
@@ -233,15 +244,114 @@ def parse_APPN_dataset_path(
         valid = False
         errors.append(f"Run folder '{parsed['run_folder']}' does not match expected pattern (e.g. 'run_00').")
 
-    # Project: if populated, must match expected pattern (e.g. 2025_Chickpea)
-    if parsed["project"] is not None and not project_regex.match(parsed["project"]):
-        valid = False
-        errors.append(f"Project folder '{parsed['project']}' does not match expected pattern (e.g. '2025_Chickpea').")
-
     # Tier: if populated, must match expected pattern (e.g. T0_raw)
     if parsed["tier"] is not None and not tier_regex.match(parsed["tier"]):
         valid = False
         errors.append(f"Tier folder '{parsed['tier']}' does not match expected pattern (e.g. 'T0_raw').")
+
+    # ----- Hierarchy alignment (sensor / site / project / node) -----
+    # Detect missing or inserted layers between the date folder and the
+    # repository root, e.g. a project folder placed directly under the
+    # node with no site folder in between.
+    def _shape(name):
+        """Classify a folder name's structural shape."""
+        if not name:
+            return None
+        if tier_regex.match(name):
+            return "tier"
+        if run_regex.match(name):
+            return "run"
+        if date_regex.match(name):
+            return "date"
+        if name in sensor_names:
+            return "sensor"
+        # Project (YYYY_Name) is checked before site so '2025_Merinda'
+        # is classified as project, not site.
+        if re.match(r"^\d{4}_.+$", name):
+            return "project"
+        if re.match(r"^\d{4}[^_].*$", name):
+            return "site"
+        return "other"
+
+    _hierarchy = [
+        ("sensor",      "sensor",  "a sensor folder (e.g. 'GOBI', 'CALVIS')"),
+        ("site_folder", "site",    "a site folder (e.g. '2025IAWatson')"),
+        ("project",     "project", "a project folder (e.g. '2025_Chickpea')"),
+        ("node",        "other",   "a node folder (e.g. 'USYD_Narrabri')"),
+    ]
+    # Only validate hierarchy alignment when every upper layer was
+    # populated (i.e. the input is at or below sensor level). For
+    # shallower path_levels we don't have enough information to detect
+    # missing/extra layers and shouldn't flag them.
+    _all_populated = all(parsed[lvl] is not None for lvl, _, _ in _hierarchy)
+    _populated = [
+        (lvl, exp, desc, parsed[lvl], _shape(parsed[lvl]))
+        for lvl, exp, desc in _hierarchy if parsed[lvl] is not None
+    ] if _all_populated else []
+    _actual = [s for *_, s in _populated]
+    _expected = [exp for _, exp, _ in _hierarchy]
+    _layout_hint = ("Expected layout: "
+                    ".../<node>/<project>/<site>/<sensor>/<date>/<run>/<tier>/<sub_tier>")
+
+    def _seq_match(actual, expected):
+        if len(actual) > len(expected):
+            return False
+        return all(a == b for a, b in zip(actual, expected))
+
+    if _populated and not _seq_match(_actual, _expected):
+        diagnosed = False
+        # Single missing layer: actual chain looks like expected with one
+        # element dropped, then everything shifts root-ward (an extra
+        # 'other' appears at the node end).
+        for i in range(len(_expected)):
+            shifted = _expected[:i] + _expected[i + 1:] + ["other"]
+            if _seq_match(_actual, shifted):
+                missing_desc = _hierarchy[i][2]
+                # Use neighbouring populated names to anchor the message.
+                above = _populated[i - 1][3] if i > 0 and i - 1 < len(_populated) else None
+                below = _populated[i][3] if i < len(_populated) else None
+                where = []
+                if above is not None:
+                    where.append(f"above '{above}'")
+                if below is not None:
+                    where.append(f"below '{below}'")
+                where_str = (" " + " and ".join(where)) if where else ""
+                errors.append(
+                    f"Path is missing {missing_desc}{where_str}. {_layout_hint}."
+                )
+                valid = False
+                diagnosed = True
+                break
+
+        # Single inserted (extra) layer: actual is expected with an
+        # 'other' spliced in at some position.
+        if not diagnosed:
+            for i in range(len(_expected) + 1):
+                inserted = (_expected[:i] + ["other"] + _expected[i:])[:len(_actual)]
+                if _seq_match(_actual, inserted):
+                    extra_name = _populated[i][3] if i < len(_populated) else "?"
+                    errors.append(
+                        f"Path appears to have an unexpected extra folder "
+                        f"'{extra_name}' inserted into the hierarchy. "
+                        f"{_layout_hint}."
+                    )
+                    valid = False
+                    diagnosed = True
+                    break
+
+        # Generic per-slot mismatch fallback.
+        if not diagnosed:
+            for lvl, exp, desc, name, actual_shape in _populated:
+                if actual_shape == exp:
+                    continue
+                if exp == "other":
+                    continue
+                hint = (f" (looks like a {actual_shape} folder)"
+                        if actual_shape and actual_shape not in ("other", exp) else "")
+                errors.append(
+                    f"Expected {desc} at the '{lvl}' position but got '{name}'{hint}."
+                )
+                valid = False
 
     # Levels that require certain predictable fields to be present
     if path_level in ("sub_tier", "tier", "run", "date") and (parsed["date"] is None or pd.isna(parsed["date"])):

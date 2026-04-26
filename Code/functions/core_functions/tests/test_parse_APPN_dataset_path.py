@@ -497,3 +497,115 @@ def test_iso_and_compact_date_same_timestamp():
     compact = parse_APPN_dataset_path(_FAKE_ISO / "20250929", path_level="date")
     iso     = parse_APPN_dataset_path(_FAKE_ISO / "2025-09-29", path_level="date")
     assert compact["date"] == iso["date"]
+
+
+# ===========================================================================
+# 15.  Hierarchy alignment diagnostics
+#
+# These tests cover the structural error messages emitted when one of the
+# expected layers (sensor / site / project / node) is missing or an
+# unexpected layer has been inserted into the path. The motivating real
+# example was Tier3 ``USYD_Narrabri/2025_Merinda/GOBI/...`` which has no
+# site folder between project and sensor.
+# ===========================================================================
+
+# Canonical good base used to build malformed variants.
+_VALID_SUB_TIER = (
+    pathlib.Path("/mnt/z/FakeRoot")
+    / "USYD_Narrabri" / "2025_Chickpea" / "2025IAWatson" / "CALVIS"
+    / "20250929" / "run_00" / "T0_raw" / "X.gpro"
+)
+
+
+def test_alignment_valid_baseline():
+    """Sanity check that the canonical fake path validates cleanly."""
+    result = parse_APPN_dataset_path(_VALID_SUB_TIER, path_level="sub_tier")
+    assert result["valid"] is True
+    assert result["errors"] == []
+
+
+def test_alignment_missing_site_folder():
+    """Site folder omitted between project and sensor (Merinda real case)."""
+    bad = (pathlib.Path("/mnt/z/FakeRoot")
+           / "USYD_Narrabri" / "2025_Merinda" / "GOBI"
+           / "20250227" / "run_06" / "T1_proc" / "X.gpro")
+    result = parse_APPN_dataset_path(bad, path_level="sub_tier")
+    assert result["valid"] is False
+    msg = " ".join(result["errors"])
+    assert "missing a site folder" in msg
+    assert "GOBI" in msg
+    assert "2025_Merinda" in msg
+
+
+def test_alignment_missing_project_folder():
+    """Project folder omitted between node and site."""
+    bad = (pathlib.Path("/mnt/z/FakeRoot")
+           / "USYD_Narrabri" / "2025IAWatson" / "CALVIS"
+           / "20250929" / "run_00" / "T0_raw" / "X.gpro")
+    result = parse_APPN_dataset_path(bad, path_level="sub_tier")
+    assert result["valid"] is False
+    msg = " ".join(result["errors"])
+    assert "missing a project folder" in msg
+    assert "2025IAWatson" in msg
+    assert "USYD_Narrabri" in msg
+
+
+def test_alignment_missing_sensor_folder():
+    """Sensor folder omitted between site and date."""
+    bad = (pathlib.Path("/mnt/z/FakeRoot")
+           / "USYD_Narrabri" / "2025_Chickpea" / "2025IAWatson"
+           / "20250929" / "run_00" / "T0_raw" / "X.gpro")
+    result = parse_APPN_dataset_path(bad, path_level="sub_tier")
+    assert result["valid"] is False
+    msg = " ".join(result["errors"])
+    assert "missing a sensor folder" in msg
+
+
+def test_alignment_extra_layer_between_project_and_site():
+    """An unexpected folder spliced in between project and site."""
+    bad = (pathlib.Path("/mnt/z/FakeRoot")
+           / "USYD_Narrabri" / "2025_Chickpea" / "EXTRA"
+           / "2025IAWatson" / "CALVIS"
+           / "20250929" / "run_00" / "T0_raw" / "X.gpro")
+    result = parse_APPN_dataset_path(bad, path_level="sub_tier")
+    assert result["valid"] is False
+    msg = " ".join(result["errors"])
+    assert "unexpected extra folder" in msg
+    assert "EXTRA" in msg
+
+
+def test_alignment_extra_layer_between_site_and_sensor():
+    """An unexpected folder spliced in between site and sensor."""
+    bad = (pathlib.Path("/mnt/z/FakeRoot")
+           / "USYD_Narrabri" / "2025_Chickpea" / "2025IAWatson"
+           / "JUNK" / "CALVIS"
+           / "20250929" / "run_00" / "T0_raw" / "X.gpro")
+    result = parse_APPN_dataset_path(bad, path_level="sub_tier")
+    assert result["valid"] is False
+    msg = " ".join(result["errors"])
+    assert "unexpected extra folder" in msg
+    assert "JUNK" in msg
+
+
+def test_alignment_error_mentions_expected_layout():
+    """All structural error messages should include the expected layout hint."""
+    bad = (pathlib.Path("/mnt/z/FakeRoot")
+           / "USYD_Narrabri" / "2025_Merinda" / "GOBI"
+           / "20250227" / "run_06" / "T1_proc" / "X.gpro")
+    result = parse_APPN_dataset_path(bad, path_level="sub_tier")
+    assert result["valid"] is False
+    assert any("<node>/<project>/<site>/<sensor>/<date>" in e
+               for e in result["errors"])
+
+
+def test_alignment_clears_fields_on_failure():
+    """When validation fails, parsed metadata fields are cleared to None."""
+    bad = (pathlib.Path("/mnt/z/FakeRoot")
+           / "USYD_Narrabri" / "2025_Merinda" / "GOBI"
+           / "20250227" / "run_06" / "T1_proc" / "X.gpro")
+    result = parse_APPN_dataset_path(bad, path_level="sub_tier")
+    assert result["valid"] is False
+    for key in ("node", "project", "site_folder", "sensor",
+                "date", "run_folder", "run", "tier", "sub_tier"):
+        assert result[key] is None, f"expected {key!r} to be cleared, got {result[key]!r}"
+
