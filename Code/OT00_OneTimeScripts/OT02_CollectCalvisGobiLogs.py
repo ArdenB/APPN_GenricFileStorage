@@ -34,10 +34,10 @@ From each ``*.graw`` folder:
 * ``mission_data.yaml``
 * ``targets.yaml``
 * ``elm_coefficients.json``
-* ``HP-*/settings.txt``
-* ``uVS-*/settings.txt``
-* ``SBG/export_*.txt``
-* ``APX-15/export_*.txt``
+* ``*HP-*/**/settings.txt`` (e.g. ``nHP-929``, ``cAHP-191``)
+* ``uVS-*/**/settings.txt``
+* ``SBG/**/export_*.txt``
+* ``APX-15/**/export_*.txt``
 
 From each ``*.gpro`` folder:
 
@@ -58,6 +58,11 @@ Command line
     ``--path`` if provided, otherwise the git repository root.
 ``--dry-run``
     List candidate copies without performing them.
+``-y``, ``--yes``
+    Skip the interactive confirmation prompt and proceed automatically.
+
+The destination directory is automatically excluded from the search so
+previously collected log bundles are never re-scanned.
 """
 
 import argparse
@@ -94,10 +99,10 @@ GRAW_PATTERNS = [
     ('', 'mission_data.yaml'),
     ('', 'targets.yaml'),
     ('', 'elm_coefficients.json'),
-    ('HP-*', 'settings.txt'),
-    ('uVS-*', 'settings.txt'),
-    ('SBG', 'export_*.txt'),
-    ('APX-15', 'export_*.txt'),
+    ('*HP-*', '**/settings.txt'),
+    ('uVS-*', '**/settings.txt'),
+    ('SBG', '**/export_*.txt'),
+    ('APX-15', '**/export_*.txt'),
 ]
 
 GPRO_PATTERNS = [
@@ -129,7 +134,7 @@ def main():
     dest_root = _resolve_dest_root(args.dest, root_paths)
     print(f"Destination: {dest_root}")
 
-    folders = _scan_for_target_folders(root_paths)
+    folders = _scan_for_target_folders(root_paths, dest_root)
     if not folders:
         print("No matching .graw/.gpro folders found.")
         return
@@ -148,8 +153,8 @@ def main():
         _print_dry_run_summary(folders)
         return
 
-    if not _confirm(f"\nProceed with copying {len(copies)} file(s) "
-                    f"to {dest_root}? (y/N): "):
+    if not args.yes and not _confirm(f"\nProceed with copying {len(copies)} file(s) "
+                                       f"to {dest_root}? (y/N): "):
         print("Operation cancelled.")
         return
 
@@ -185,6 +190,8 @@ def _parse_args():
                               'Defaults to <root>/GRYFN_logs.'))
     parser.add_argument('--dry-run', action='store_true',
                         help='List what would be copied without copying.')
+    parser.add_argument('-y', '--yes', action='store_true',
+                        help='Skip confirmation prompt and proceed automatically.')
     return parser.parse_args()
 
 
@@ -253,7 +260,7 @@ def _resolve_dest_root(raw_dest, root_paths):
     return root_paths[0] / 'GRYFN_logs'
 
 
-def _scan_for_target_folders(root_paths):
+def _scan_for_target_folders(root_paths, dest_root):
     """Scan every search root for ``.graw``/``.gpro`` folders.
 
     Records found across multiple roots are de-duplicated by their
@@ -263,6 +270,9 @@ def _scan_for_target_folders(root_paths):
     ----------
     root_paths : list of pathlib.Path
         Search roots to walk.
+    dest_root : pathlib.Path
+        Output directory; excluded from the walk so previously
+        collected logs are never re-scanned.
 
     Returns
     -------
@@ -271,12 +281,13 @@ def _scan_for_target_folders(root_paths):
         each annotated with a ``search_root`` key naming the root that
         discovered it.
     """
+    exclude = frozenset([dest_root.resolve()])
     print("\nSearching for CALVIS/GOBI '.graw' and '.gpro' folders...")
     folders = []
     seen_sources = set()
     for root_path in root_paths:
         print(f"  scanning {root_path} ...")
-        for rec in find_target_folders(root_path):
+        for rec in find_target_folders(root_path, exclude):
             src = rec['source'].resolve()
             if src in seen_sources:
                 continue
@@ -578,7 +589,7 @@ def has_sensor_ancestor(path):
     return None
 
 
-def find_target_folders(root_path):
+def find_target_folders(root_path, exclude_paths=frozenset()):
     """Find ``.graw`` and ``.gpro`` folders under CALVIS/GOBI sensors.
 
     Uses :func:`os.walk` and prunes traversal once a target folder is
@@ -606,8 +617,12 @@ def find_target_folders(root_path):
     records = []
     skip_dirs = {'@eaDir', '.git', '#recycle', 'Vault'}
     for dirpath, dirnames, _ in os.walk(root_path):
-        # Prune obvious noise.
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        # Prune obvious noise and excluded directories.
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in skip_dirs
+            and Path(dirpath, d).resolve() not in exclude_paths
+        ]
 
         keep = []
         for name in dirnames:

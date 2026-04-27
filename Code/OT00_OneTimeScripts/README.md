@@ -172,6 +172,7 @@ the source paths.
 | `--path PATH [PATH ...]` | One or more search roots. May be repeated or supplied as a space-separated list. |
 | `--dest PATH` | Output directory. Defaults to `<first --path>/GRYFN_logs`. |
 | `--dry-run` | List the copy plan and per-folder APPN validation results without touching disk. |
+| `-y`, `--yes` | Skip the interactive confirmation prompt and proceed automatically. |
 
 **Files collected**
 
@@ -180,10 +181,10 @@ From each `*.graw` folder:
 - `mission_data.yaml`
 - `targets.yaml`
 - `elm_coefficients.json`
-- `HP-*/settings.txt`
-- `uVS-*/settings.txt`
-- `SBG/export_*.txt`
-- `APX-15/export_*.txt`
+- `*HP-*/**/settings.txt` (recursive; matches e.g. `nHP-929`, `cAHP-191`)
+- `uVS-*/**/settings.txt` (recursive)
+- `SBG/**/export_*.txt` (recursive)
+- `APX-15/**/export_*.txt` (recursive)
 
 From each `*.gpro` folder:
 
@@ -226,6 +227,9 @@ python Code/OT00_OneTimeScripts/OT02_CollectCalvisGobiLogs.py \
 
 - The same source folder discovered via two overlapping search roots is
   collected only once (de-duplicated by resolved absolute path).
+- The destination directory is automatically excluded from the search,
+  so re-running the script does not re-scan a previously collected
+  bundle (e.g. `<root>/GRYFN_logs`).
 - Sensor matching is by ancestor folder name containing `CALVIS` or
   `GOBI` — folders that follow the convention but live under an
   oddly-named parent will be skipped.
