@@ -35,11 +35,13 @@ This repository provides a data structure and automation scripts for managing da
    python ProjectBuilder.py
    ```
 5. **Add info to the project_summary.csv**
-   - Add details to the project summary csv found in the node folder. The should be in the form of TRUE and FALSE depending on if a project uses a given sensor.  
-   - Project name should follow the format in FolderStructure.txt
+   - Add details to the project summary csv found in the node folder. Values should be `TRUE` or `FALSE` depending on whether a project uses a given sensor.
+   - Project name should follow the format in `FolderStructureInfo.txt`.
+
    ```bash
    python ProjectBuilder.py
    ```
+
    - Edit or generate `ProjectInfo.yaml` for project, researcher, and site metadata.
 
 ## File Descriptions
