@@ -204,7 +204,11 @@ def Sitebuilder(flog_fname, df_flog, index, frow, check, site, project, node, ar
         # Don't overwrite existing tables; users may have added extra columns.
         if not os.path.isfile(run_overview_fname):
             run_names = [f"run_{runNo:02d}" for runNo in np.arange(frow.Runs)]
-            df_runs = pd.DataFrame({"RunFailed": [False] * len(run_names)}, index=run_names)
+            run_cols: dict[str, list] = {"RunFailed": [False] * len(run_names)}
+            # FIELDOBS runs need an extra column to record the type of field data captured.
+            if frow.Sensor == "FIELDOBS":
+                run_cols["FieldDataType"] = [""] * len(run_names)
+            df_runs = pd.DataFrame(run_cols, index=run_names)
             df_runs.index.name = "Run"
             df_runs.to_csv(run_overview_fname)
             if not args.no_git:
