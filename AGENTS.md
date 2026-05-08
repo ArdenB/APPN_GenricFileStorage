@@ -29,6 +29,7 @@
 - **P7** — File-type defaults: `parquet` for tabular data on disk; `csv` only for human-edited / small metadata files.
 - **P8** — Print a one-line progress message at the start of each major step (`print(f"Loading {fpath} ...")`).
 - **P9** — Avoid copying a function between scripts. If two scripts need it, prefer moving it into `functions/` and importing it.
+- **P10** - Use `tqdm` when using for loops instead of print statements.
 
 ## 3. Forbidden patterns
 
