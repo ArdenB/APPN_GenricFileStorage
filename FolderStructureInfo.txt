@@ -15,6 +15,21 @@ node
 
 		Site{_source}
 			
+			Documentation
+				Plot_Layout
+					{YYYYSiteName}_plots.geojson						# mandatory main plot file (not auto-created)
+					{YYYYSiteName}_plots_{descriptor|sensor}[_v{NN}].geojson	# optional variants (e.g. _unbuffered, _HIRES)
+					{YYYYSiteName}_sampling_{measurement}_{YYYYMMDD}[_v{NN}].geojson	# optional, one per measurement type
+					{YYYYSiteName}_gcp[_v{NN}].geojson					# optional, permanent surveyed GCPs only
+					{YYYYSiteName}_plots_v{NN}.json						# optional tool config sidecar (e.g. FIELDimageR)
+					*_deprecated.geojson							# superseded copies retained for provenance
+					README.md								# auto: seeded template, strongly recommended to maintain
+				Trial_Info
+					{YYYYSiteName}_trial_info.csv						# trial-info spreadsheet; must contain plot_id column
+					{YYYYSiteName}_trial_info_{YYYYMMDD}_deprecated.csv			# superseded versions
+					README.md								# auto: seeded template
+			Code
+
 			SensorPlatform
 
 				YYYYMMDD 
@@ -29,8 +44,6 @@ node
 						T1_proc
 							*QC_data	# GOBI / CALVIS only — quality-control inputs/outputs
 						T2_traits
-			*Documents
-			*code
 
 		*Documents
 		*code
@@ -41,6 +54,10 @@ node
 # - All auto files are created and maintained by ProjectBuilder.py.
 # - FieldNotes.txt and RunOverview.csv are skipped when the corresponding
 #   FieldLog.csv row sets MakeNotesFile / MakeTableFile to False.
+# - Site-level Documentation/Plot_Layout/ and Documentation/Trial_Info/
+#   are auto-created at each site; their README.md stubs are seeded once
+#   and never overwritten. See the Plot Delineation protocol for the
+#   full file-naming spec and the _deprecated / _v{NN} conventions.
 # - See the wiki Key-Files page for full schema details.
 
 # Summary 

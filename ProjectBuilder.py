@@ -338,9 +338,19 @@ def projBuilder(project, node, colnames, args, repo, gitmod):
             Site_names.append(sitename)
 
             # +++++ Check if the site folder exists +++++
-            pymkdir(f"./{node["name"]}/{project}/{sitename}")
-            for fld in ["Documentation", "Code"]:
-                pymkdir(f"./{node["name"]}/{project}/{sitename}/{fld}")
+            site_root = f"./{node['name']}/{project}/{sitename}"
+            pymkdir(site_root)
+            pymkdir(f"{site_root}/Code")
+            # +++++ Site-level Documentation/ now has two protocol-defined subfolders +++++
+            # See DataFolderStructure.md and Plot_Delineation.md for the spec.
+            pymkdir(f"{site_root}/Documentation")
+            # The YYYYSiteName key used in plot/trial filenames is the site
+            # folder name without the _F / _C controlled-environment suffix.
+            yyyysite = f"{site['year']}{site['name']}"
+            for sub in ("Plot_Layout", "Trial_Info"):
+                doc_sub = f"{site_root}/Documentation/{sub}"
+                pymkdir(doc_sub)
+                gitmod = _seedDocReadme(doc_sub, sub, yyyysite, args, repo, gitmod)
 
     return df_flog, gitmod, flog_fname, Site_names, ProjectInfo, 
 
@@ -741,6 +751,103 @@ def _sitenamemaker(site, psyl_fname=""):
         else:
             sitename = f"{sitename}_F" # Field Site
     return sitename
+
+# ==============================================================================
+def _seedDocReadme(folder, kind, yyyysite, args, repo, gitmod):
+    """
+    Seed a README.md stub in a site-level Documentation subfolder.
+
+    Parameters
+    ----------
+    folder : str
+        Path to the Documentation subfolder (e.g. ``.../Documentation/Plot_Layout``).
+    kind : str
+        Subfolder name; must be ``"Plot_Layout"`` or ``"Trial_Info"``.
+    yyyysite : str
+        ``{YYYY}{SiteName}`` key used in plot/trial filenames (no
+        ``_F`` / ``_C`` controlled-environment suffix).
+    args : argparse.Namespace
+        Parsed CLI arguments.
+    repo : git.Repo or None
+        GitPython Repo object (``None`` when ``--no-git`` is set).
+    gitmod : bool
+        Current git-modification flag.
+
+    Returns
+    -------
+    gitmod : bool
+        Updated git-modification flag.
+
+    Notes
+    -----
+    Templates follow the Folder README example in the Plot Delineation
+    protocol. Existing READMEs are never overwritten — operators may have
+    populated them with site-specific context.
+    """
+    fname = f"{folder}/README.md"
+    if os.path.isfile(fname):
+        return gitmod
+
+    if kind == "Plot_Layout":
+        body = (
+            f"# Plot Layout — {yyyysite}\n\n"
+            "Site-specific notes for the files in this folder. For the\n"
+            "APPN-wide spec see the [Plot Delineation protocol]"
+            "(https://github.com/ArdenB/APPN-Aerial-Standard-Operating-Procedures/"
+            "blob/main/Protocols/PlotProtocols/PlotDelineation/Plot_Delineation.md).\n\n"
+            "## Current main file\n"
+            f"- `{yyyysite}_plots.geojson` — fitted YYYY-MM-DD by <name>,\n"
+            "  method <FIELDimageR | DPIRD | GPT>.\n\n"
+            "## Variants in use\n"
+            "- `plots_unbuffered` — used by <pipeline / person> for <reason>.\n"
+            "- `plots_{sensor}` — justified because <CRS / portion-of-plot reason>;\n"
+            "  approved by EWG on <date>.\n\n"
+            "## Sampling campaigns\n"
+            "- `sampling_biomass_YYYYMMDD…` — operator, quadrat size, anything odd.\n\n"
+            "## Deprecated files\n"
+            "| File | Replaced on | Reason | Superseded by |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| `{yyyysite}_plots_YYYYMMDD_deprecated.geojson` | YYYY-MM-DD | "
+            f"<reason> | `{yyyysite}_plots.geojson` |\n\n"
+            "## Known issues / quirks\n"
+            "- e.g. \"HIRES flight 2025-10-12 had a 7 cm N–S offset — corrected in\n"
+            "  re-process.\"\n"
+        )
+    elif kind == "Trial_Info":
+        body = (
+            f"# Trial Info — {yyyysite}\n\n"
+            "Site-specific notes for the trial-information spreadsheet(s)\n"
+            "in this folder. For the APPN-wide spec see the\n"
+            "[Plot Delineation protocol — Trial Information]"
+            "(https://github.com/ArdenB/APPN-Aerial-Standard-Operating-Procedures/"
+            "blob/main/Protocols/PlotProtocols/PlotDelineation/Plot_Delineation.md"
+            "#joining-trial-information).\n\n"
+            "## Current trial info file\n"
+            f"- `{yyyysite}_trial_info.csv` — source: <spreadsheet / contact>,\n"
+            "  last updated YYYY-MM-DD.\n\n"
+            "## Column definitions\n"
+            "- `plot_id` (mandatory) — joins to the plot file in `../Plot_Layout/`.\n"
+            "- `<column>` — <definition / units>.\n\n"
+            "## Source spreadsheets and contacts\n"
+            "- <person / team> — <where the master spreadsheet lives>.\n\n"
+            "## Deprecated files\n"
+            "| File | Replaced on | Reason | Superseded by |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| `{yyyysite}_trial_info_YYYYMMDD_deprecated.csv` | YYYY-MM-DD | "
+            f"<reason> | `{yyyysite}_trial_info.csv` |\n\n"
+            "## Known quirks\n"
+            "- e.g. \"Plot 1042 was resown — exclude from emergence stats.\"\n"
+        )
+    else:
+        raise ValueError(f"Unknown Documentation subfolder kind: {kind}")
+
+    with open(fname, "w") as f:
+        f.write(body)
+    print(f"Seeded README template: {fname}")
+    if not args.no_git and repo is not None:
+        repo.git.add(fname)
+        gitmod = True
+    return gitmod
 
 # ==============================================================================
 def Rowchecker(flog_fname, flrow, prow, ProjectInfo, historical, past_date=(pd.Timestamp.now()-pd.Timedelta(days=14))):
