@@ -27,6 +27,20 @@ https://github.com/ArdenB/APPN_GenricFileStorage/wiki) using
 output_path, appn_valid, appn_errors, node, project, site_folder, year,
 sensor_folder, date, run_folder, run, tier, sub_tier``.
 
+In addition the script also writes:
+
+* ``manifest_graw.csv`` / ``manifest_gpro.csv`` -- per-kind audit
+  manifests with one row per source folder and one column per
+  expected pattern holding the file count in raw (``0`` means absent
+  in raw, ``>=1`` means the collection script should have copied it).
+  When ``--missing-report`` is supplied, three extra columns
+  (``reported_missing``, ``confirmed_missing_in_raw``,
+  ``present_in_raw_not_collected``) cross-check a recipient's
+  missing-files report against the raw data.
+* ``<group_label>/<source.name>/_contents.txt`` -- a per-folder
+  ``Path.rglob('*')`` listing of every entry inside the raw
+  ``.graw``/``.gpro`` source folder. Suppress with ``--no-listings``.
+
 Files collected
 ---------------
 From each ``*.graw`` folder:
@@ -72,44 +86,101 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import os
+from git import Repo
 
 from tqdm import tqdm
 
 # Make the repository root importable so we can use the shared APPN path
 # parser. The script lives in ``Code/OT00_OneTimeScripts``; the repo root
 # is two levels above.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+repo_root = Repo(".", search_parent_directories=True).working_tree_dir
+
+# _REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+    os.chdir(str(repo_root))
 
 from Code.functions.core_functions.parse_APPN_dataset_path import (  # noqa: E402
     parse_APPN_dataset_path,
 )
 
-SENSOR_KEYWORDS = ('CALVIS', 'GOBI')
+class CollectionConfig:
+    """Bundle every configurable constant used by the collection run.
 
-# Matches APPN run folder names. Accepts ``run_00``, ``run00``,
-# ``Run-3``, ``RUN.12``, etc. Anything that does not look like a run
-# folder is treated as "no run folder" and the source is kept in its
-# own group (no false pairing across unrelated source folders).
-_RUN_FOLDER_RE = re.compile(r'^run[_\-\.]?\d+$', re.IGNORECASE)
+    Holding the patterns, sensor keywords and regexes on a single
+    object lets callers pass one ``cfg`` argument around instead of
+    relying on module-level globals, which makes the data flow
+    explicit and the script easier to test or reuse.
 
-# (subdir relative to .graw root, glob within that subdir)
-GRAW_PATTERNS = [
-    ('', 'mission_data.yaml'),
-    ('', 'targets.yaml'),
-    ('', 'elm_coefficients.json'),
-    ('*HP-*', '**/settings.txt'),
-    ('uVS-*', '**/settings.txt'),
-    ('SBG', '**/export_*.txt'),
-    ('APX-15', '**/export_*.txt'),
-]
+    Attributes
+    ----------
+    sensor_keywords : tuple of str
+        Substrings looked for (case-insensitive) in ancestor folder
+        names to decide which sensor a ``.graw``/``.gpro`` belongs to.
+    run_folder_re : re.Pattern
+        Regex matching APPN run folder names (``run_00``, ``Run-3`` ...).
+    graw_patterns, gpro_patterns : list of (str, str, str)
+        ``(column_name, subdir_glob, file_glob)`` triples describing
+        which files to collect from each ``.graw`` / ``.gpro`` folder.
+        An empty ``subdir_glob`` targets the folder root itself.
+    report_to_columns : dict of {str: list of str}
+        Maps free-form labels from a recipient missing-files report to
+        the pattern column names above. Keys are lowercased. A
+        reported item is treated as truly missing only when *every*
+        mapped column has zero matches in the raw source folder.
+    report_line_re : re.Pattern
+        Regex matching one line of the recipient missing-files report.
+    """
 
-GPRO_PATTERNS = [
-    ('', 'products.yaml'),
-    ('pipelines', '*.yml'),
-    ('processing_logs', '*.txt'),
-]
+    def __init__(self):
+        self.sensor_keywords = ('CALVIS', 'GOBI')
+        self.run_folder_re = re.compile(r'^run[_\-\.]?\d+$', re.IGNORECASE)
+        self.graw_patterns = [
+            ('mission_data.yaml',     '',         'mission_data.yaml'),
+            ('targets.yaml',          '',         'targets.yaml'),
+            ('elm_coefficients.json', '',         'elm_coefficients.json'),
+            ('nHP/cAHP_settings.txt', '*HP-*',    '**/settings.txt'),
+            ('uVS_settings.txt',      'uVS-*',    '**/settings.txt'),
+            ('SBG_export.txt',        'SBG',      '**/export_*.txt'),
+            ('APX-15_export.txt',     'APX-15',   '**/export_*.txt'),
+        ]
+        self.gpro_patterns = [
+            ('products.yaml',         '',                 'products.yaml'),
+            ('pipelines_yml',         'pipelines',        '*.yml'),
+            ('processing_logs_txt',   'processing_logs',  '*.txt'),
+        ]
+        self.report_to_columns = {
+            'mission_data.yaml':                              ['mission_data.yaml'],
+            'targets.yaml':                                   ['targets.yaml'],
+            'elm_coefficients.json':                          ['elm_coefficients.json'],
+            'nhp-###/**/settings.txt':                        ['nHP/cAHP_settings.txt'],
+            'uvs-###/**/settings.txt':                        ['uVS_settings.txt'],
+            'sbg/**/export_*.txt or apx-15/**/export_*.txt':  ['SBG_export.txt',
+                                                               'APX-15_export.txt'],
+            'products.yaml':                                  ['products.yaml'],
+            'pipelines/*.yml':                                ['pipelines_yml'],
+            'processing_logs/*.txt':                          ['processing_logs_txt'],
+        }
+        self.report_line_re = re.compile(
+            r'^Missing files in \.(?P<kind>graw|gpro) folder:\s*'
+            r'(?P<path>.+?)\s+Missing:\s*(?P<items>.+)$'
+        )
+
+    def patterns_for(self, kind):
+        """Return the pattern list for ``'graw'`` or ``'gpro'``.
+
+        Parameters
+        ----------
+        kind : str
+            Either ``'graw'`` or ``'gpro'``.
+
+        Returns
+        -------
+        list of (str, str, str)
+            The matching ``(column, subdir_glob, file_glob)`` list.
+        """
+        return self.graw_patterns if kind == 'graw' else self.gpro_patterns
 
 
 def main():
@@ -130,19 +201,21 @@ def main():
     args = _parse_args()
     _print_banner()
 
+    cfg = CollectionConfig()
+
     root_paths = _resolve_search_roots(args.path)
     dest_root = _resolve_dest_root(args.dest, root_paths)
     print(f"Destination: {dest_root}")
 
-    folders = _scan_for_target_folders(root_paths, dest_root)
+    folders = _scan_for_target_folders(root_paths, dest_root, cfg)
     if not folders:
         print("No matching .graw/.gpro folders found.")
         return
 
-    _annotate_folders(folders, dest_root)
+    _annotate_folders(folders, dest_root, cfg)
     _print_scan_summary(folders)
 
-    copies = _build_copy_plan(folders)
+    copies = _build_copy_plan(folders, cfg)
     if not copies:
         print("No matching files found inside any folders.")
         return
@@ -164,7 +237,31 @@ def main():
     manifest_path = dest_root / 'manifest.csv'
     write_manifest(manifest_path, folders)
 
-    _print_completion(success_count, failure_count, dest_root, manifest_path)
+    # Per-source rglob('*') listings so reviewers can see exactly what
+    # lives inside each .graw / .gpro folder in the raw data.
+    listing_count = 0
+    if not args.no_listings:
+        listing_count = _write_folder_listings(folders, dest_root)
+
+    # Audit each folder against the expected patterns and write the
+    # per-kind manifests, optionally cross-checked against a recipient
+    # missing-files report.
+    missing_map = {}
+    if args.missing_report:
+        report_path = Path(args.missing_report).expanduser().resolve()
+        missing_map = _parse_missing_report(report_path, cfg)
+        print(f"\nParsed {len(missing_map)} entries from "
+              f"missing-report {report_path}")
+
+    audit_rows = _audit_folders(folders, missing_map, cfg)
+    graw_manifest = dest_root / 'manifest_graw.csv'
+    gpro_manifest = dest_root / 'manifest_gpro.csv'
+    _write_audit_manifest(graw_manifest, audit_rows, 'graw', cfg.graw_patterns)
+    _write_audit_manifest(gpro_manifest, audit_rows, 'gpro', cfg.gpro_patterns)
+    _print_audit_summary(audit_rows, missing_map, cfg)
+
+    _print_completion(success_count, failure_count, dest_root, manifest_path,
+                      graw_manifest, gpro_manifest, listing_count)
 
 
 def _parse_args():
@@ -192,6 +289,16 @@ def _parse_args():
                         help='List what would be copied without copying.')
     parser.add_argument('-y', '--yes', action='store_true',
                         help='Skip confirmation prompt and proceed automatically.')
+    parser.add_argument('--missing-report', type=str, default=None,
+                        help=('Optional text file containing a recipient '
+                              "missing-files list. Each line: "
+                              "'Missing files in .<kind> folder: <path>  "
+                              "Missing: a, b, c'. Used to populate the "
+                              'cross-check columns in manifest_graw.csv / '
+                              'manifest_gpro.csv.'))
+    parser.add_argument('--no-listings', action='store_true',
+                        help=('Skip writing per-folder _contents.txt rglob '
+                              'listings of every .graw/.gpro source folder.'))
     return parser.parse_args()
 
 
@@ -260,7 +367,7 @@ def _resolve_dest_root(raw_dest, root_paths):
     return root_paths[0] / 'GRYFN_logs'
 
 
-def _scan_for_target_folders(root_paths, dest_root):
+def _scan_for_target_folders(root_paths, dest_root, cfg):
     """Scan every search root for ``.graw``/``.gpro`` folders.
 
     Records found across multiple roots are de-duplicated by their
@@ -273,6 +380,9 @@ def _scan_for_target_folders(root_paths, dest_root):
     dest_root : pathlib.Path
         Output directory; excluded from the walk so previously
         collected logs are never re-scanned.
+    cfg : CollectionConfig
+        Run configuration providing the sensor keywords used to
+        identify CALVIS/GOBI ancestors.
 
     Returns
     -------
@@ -287,7 +397,7 @@ def _scan_for_target_folders(root_paths, dest_root):
     seen_sources = set()
     for root_path in root_paths:
         print(f"  scanning {root_path} ...")
-        for rec in find_target_folders(root_path, exclude):
+        for rec in find_target_folders(root_path, cfg, exclude):
             src = rec['source'].resolve()
             if src in seen_sources:
                 continue
@@ -297,7 +407,7 @@ def _scan_for_target_folders(root_paths, dest_root):
     return folders
 
 
-def _annotate_folders(folders, dest_root):
+def _annotate_folders(folders, dest_root, cfg):
     """Sort, group, label and APPN-validate each folder record in-place.
 
     ``.graw`` and ``.gpro`` folders that share a run (the ``run_XX``
@@ -317,6 +427,8 @@ def _annotate_folders(folders, dest_root):
         Folder records produced by :func:`_scan_for_target_folders`.
     dest_root : pathlib.Path
         Output directory used to compute each record's ``out_dir``.
+    cfg : CollectionConfig
+        Run configuration providing the run-folder regex.
 
     Returns
     -------
@@ -326,7 +438,7 @@ def _annotate_folders(folders, dest_root):
     # Compute a stable group key per record (the run folder if we can
     # find it, otherwise the immediate parent folder).
     for rec in folders:
-        rec['group_key'] = _run_group_key(rec['source'])
+        rec['group_key'] = _run_group_key(rec['source'], cfg)
 
     folders.sort(key=lambda r: (r['sensor'], str(r['group_key']),
                                 r['kind'], str(r['source'])))
@@ -355,11 +467,11 @@ def _annotate_folders(folders, dest_root):
         rec['appn'] = validate_appn_path(rec['source'])
 
 
-def _run_group_key(source):
+def _run_group_key(source, cfg):
     """Return a grouping key identifying the run a folder belongs to.
 
     The key is the resolved path of the nearest ancestor folder whose
-    name looks like an APPN run folder (matches ``^run[_\\-\\.]?\\d+$``,
+    name looks like an APPN run folder (matches ``cfg.run_folder_re``,
     case-insensitive — accepts ``run_00``, ``run00``, ``Run-3`` etc.).
     Sibling ``.graw`` and ``.gpro`` folders from the same run share
     that ancestor and therefore the same key.
@@ -372,6 +484,8 @@ def _run_group_key(source):
     ----------
     source : pathlib.Path
         Path to a ``.graw`` or ``.gpro`` folder.
+    cfg : CollectionConfig
+        Run configuration providing ``run_folder_re``.
 
     Returns
     -------
@@ -384,7 +498,7 @@ def _run_group_key(source):
     # .../<run>/<tier>/<X.graw>, so the run is parents[1]; we allow a
     # couple of extra levels for slight schema drift.
     for ancestor in resolved.parents[:5]:
-        if _RUN_FOLDER_RE.match(ancestor.name):
+        if cfg.run_folder_re.match(ancestor.name):
             return ancestor
     return resolved
 
@@ -408,13 +522,15 @@ def _print_scan_summary(folders):
     print(f"  .gpro folders: {n_gpro}")
 
 
-def _build_copy_plan(folders):
+def _build_copy_plan(folders, cfg):
     """Build the full ``(src, dst)`` list for every folder record.
 
     Parameters
     ----------
     folders : list of dict
         Annotated folder records.
+    cfg : CollectionConfig
+        Run configuration providing the per-kind pattern lists.
 
     Returns
     -------
@@ -424,7 +540,7 @@ def _build_copy_plan(folders):
     print("\nCollecting file list...")
     copies = []
     for rec in folders:
-        patterns = GRAW_PATTERNS if rec['kind'] == 'graw' else GPRO_PATTERNS
+        patterns = cfg.patterns_for(rec['kind'])
         copies.extend(collect_from_folder(rec['source'], rec['out_dir'],
                                           patterns))
     return copies
@@ -511,19 +627,23 @@ def _execute_copies(copies):
     return success_count, failure_count
 
 
-def _print_completion(success_count, failure_count, dest_root, manifest_path):
+def _print_completion(success_count, failure_count, dest_root, manifest_path,
+                      graw_manifest, gpro_manifest, listing_count):
     """Print the final completion summary block.
 
     Parameters
     ----------
-    success_count : int
-        Number of files copied successfully.
-    failure_count : int
-        Number of files that failed to copy.
+    success_count, failure_count : int
+        Copy success / failure counts.
     dest_root : pathlib.Path
         Output directory.
     manifest_path : pathlib.Path
-        Path to the written manifest CSV.
+        Path to the primary manifest CSV.
+    graw_manifest, gpro_manifest : pathlib.Path
+        Paths to the per-kind audit manifests.
+    listing_count : int
+        Number of ``_contents.txt`` listing files written (``0`` when
+        ``--no-listings`` is set).
     """
     print("\n" + "=" * 60)
     print("Copy completed!")
@@ -531,6 +651,10 @@ def _print_completion(success_count, failure_count, dest_root, manifest_path):
     print(f"Failed: {failure_count}")
     print(f"Output directory:    {dest_root}")
     print(f"Manifest:            {manifest_path}")
+    print(f"Graw audit manifest: {graw_manifest}")
+    print(f"Gpro audit manifest: {gpro_manifest}")
+    if listing_count:
+        print(f"Per-folder listings: {listing_count} _contents.txt files")
     print("=" * 60)
 
 
@@ -562,17 +686,19 @@ def get_git_root():
         return None
 
 
-def has_sensor_ancestor(path):
+def has_sensor_ancestor(path, cfg):
     """Return the matched sensor keyword for ``path``, or ``None``.
 
     Walks ``path``'s ancestors and returns the first keyword from
-    :data:`SENSOR_KEYWORDS` found in an ancestor folder name
+    ``cfg.sensor_keywords`` found in an ancestor folder name
     (case-insensitive).
 
     Parameters
     ----------
     path : pathlib.Path
         Path whose ancestors should be inspected.
+    cfg : CollectionConfig
+        Run configuration providing ``sensor_keywords``.
 
     Returns
     -------
@@ -583,13 +709,13 @@ def has_sensor_ancestor(path):
     """
     for parent in path.parents:
         upper = parent.name.upper()
-        for keyword in SENSOR_KEYWORDS:
+        for keyword in cfg.sensor_keywords:
             if keyword in upper:
                 return keyword
     return None
 
 
-def find_target_folders(root_path, exclude_paths=frozenset()):
+def find_target_folders(root_path, cfg, exclude_paths=frozenset()):
     """Find ``.graw`` and ``.gpro`` folders under CALVIS/GOBI sensors.
 
     Uses :func:`os.walk` and prunes traversal once a target folder is
@@ -600,14 +726,18 @@ def find_target_folders(root_path, exclude_paths=frozenset()):
     ----------
     root_path : pathlib.Path
         Directory to scan recursively.
+    cfg : CollectionConfig
+        Run configuration providing the sensor keywords.
+    exclude_paths : collections.abc.Container of pathlib.Path, optional
+        Resolved paths to skip during traversal.
 
     Returns
     -------
     list of dict
         One record per discovered target folder. Each record has keys:
 
-        - ``sensor`` (str): sensor keyword from
-          :data:`SENSOR_KEYWORDS` matched in an ancestor folder name.
+        - ``sensor`` (str): sensor keyword from ``cfg.sensor_keywords``
+          matched in an ancestor folder name.
         - ``kind`` (str): either ``'graw'`` or ``'gpro'``.
         - ``source`` (:class:`pathlib.Path`): absolute path to the
           discovered folder.
@@ -634,7 +764,7 @@ def find_target_folders(root_path, exclude_paths=frozenset()):
             else:
                 keep.append(name)
                 continue
-            sensor = has_sensor_ancestor(current)
+            sensor = has_sensor_ancestor(current, cfg)
             if sensor is not None:
                 records.append({'sensor': sensor, 'kind': kind,
                                 'source': current})
@@ -669,7 +799,7 @@ def collect_from_folder(folder, out_dir, patterns):
         ``(src, dst)`` pairs ready to pass to :func:`copy_file`.
     """
     pairs = []
-    for subdir_glob, file_glob in patterns:
+    for _col, subdir_glob, file_glob in patterns:
         if subdir_glob == '':
             sub_iter = [folder]
         else:
@@ -828,6 +958,283 @@ def write_manifest(manifest_path, folders):
                 appn.get('tier') or '',
                 appn.get('sub_tier') or '',
             ])
+
+def _write_folder_listings(folders, dest_root):
+    """Write a ``_contents.txt`` rglob('*') listing per source folder.
+
+    The listing files are placed at the root of each output folder
+    (``<dest_root>/<group_label>/<source.name>/_contents.txt``) and
+    contain one POSIX-style relative path per line so reviewers can
+    see exactly what lives inside the raw ``.graw`` / ``.gpro``
+    folder. A trailing ``/`` marks directories.
+
+    Parameters
+    ----------
+    folders : list of dict
+        Annotated folder records (must have ``source`` and ``out_dir``).
+    dest_root : pathlib.Path
+        Output directory (used only for the introductory log line).
+
+    Returns
+    -------
+    int
+        Number of listing files successfully written.
+    """
+    print(f"\nWriting per-folder _contents.txt rglob listings under {dest_root}...")
+    written = 0
+    for rec in tqdm(folders, desc="Listing", unit="folder"):
+        src = rec['source']
+        if not src.is_dir():
+            continue
+        out_file = rec['out_dir'] / '_contents.txt'
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            entries = sorted(src.rglob('*'))
+        except OSError as exc:
+            tqdm.write(f"\u2717 listing {src}: {exc}")
+            continue
+        with open(out_file, 'w', encoding='utf-8') as fh:
+            fh.write(f"# rglob('*') listing of {src}\n")
+            fh.write(f"# total entries: {len(entries)}\n")
+            for sub in entries:
+                try:
+                    rel = sub.relative_to(src).as_posix()
+                except ValueError:
+                    rel = sub.as_posix()
+                suffix = '/' if sub.is_dir() else ''
+                fh.write(f"{rel}{suffix}\n")
+        written += 1
+    return written
+
+
+def _parse_missing_report(path, cfg):
+    """Parse a recipient missing-files report into a label-keyed dict.
+
+    Each line is expected in the form::
+
+        Missing files in .<kind> folder: <abs path>  Missing: a, b, c
+
+    The path may use Windows or POSIX separators. The last two path
+    components (``GROUP_LABEL/<source folder name>``) are used as the
+    lookup key so it can be matched against each record's ``label``.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Text file containing the report.
+    cfg : CollectionConfig
+        Run configuration providing ``report_line_re``.
+
+    Returns
+    -------
+    dict of {str: list of str}
+        ``{label_key_lower: [reported_item, ...]}``.
+    """
+    from pathlib import PureWindowsPath, PurePosixPath
+    if not path.is_file():
+        print(f"Warning: missing-report file not found: {path}")
+        return {}
+    out = {}
+    with open(path, encoding='utf-8') as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line:
+                continue
+            m = cfg.report_line_re.match(line)
+            if not m:
+                print(f"  skipped unparsable line: {line[:100]}")
+                continue
+            raw_path = m.group('path').strip()
+            if '\\' in raw_path:
+                parts = PureWindowsPath(raw_path).parts
+            else:
+                parts = PurePosixPath(raw_path).parts
+            if len(parts) < 2:
+                continue
+            key = f'{parts[-2]}/{parts[-1]}'.lower()
+            items = [s.strip() for s in m.group('items').split(',') if s.strip()]
+            out[key] = items
+    return out
+
+
+def _scan_folder_counts(folder, patterns):
+    """Return ``{column: file_count}`` matching each pattern in ``folder``.
+
+    Parameters
+    ----------
+    folder : pathlib.Path
+        Source ``.graw`` or ``.gpro`` folder.
+    patterns : list of (str, str, str)
+        ``(column, subdir_glob, file_glob)`` triples.
+
+    Returns
+    -------
+    dict of {str: int}
+        File count per pattern column. ``0`` means the file is absent
+        in raw.
+    """
+    counts = {col: 0 for col, _, _ in patterns}
+    if not folder.is_dir():
+        return counts
+    for col, subdir_glob, file_glob in patterns:
+        sub_iter = ([folder] if subdir_glob == ''
+                    else [p for p in folder.glob(subdir_glob) if p.is_dir()])
+        n = 0
+        for sub in sub_iter:
+            try:
+                for hit in sub.glob(file_glob):
+                    if hit.is_file():
+                        n += 1
+            except OSError:
+                pass
+        counts[col] = n
+    return counts
+
+
+def _audit_folders(folders, missing_map, cfg):
+    """Build per-folder audit rows with pattern counts and cross-check.
+
+    Each row contains the source identification fields, one count
+    column per expected pattern, and three cross-check columns derived
+    from ``missing_map`` (the recipient's report):
+
+    * ``reported_missing`` -- raw items the report flagged.
+    * ``confirmed_missing_in_raw`` -- reported items that really are
+      absent in the raw data (count == 0 across every mapped column).
+    * ``present_in_raw_not_collected`` -- reported items that exist in
+      raw but were not copied: a code/data bug to investigate.
+
+    Parameters
+    ----------
+    folders : list of dict
+        Annotated folder records.
+    missing_map : dict of {str: list of str}
+        Output of :func:`_parse_missing_report`. Empty dict disables
+        the cross-check (those columns will be blank).
+    cfg : CollectionConfig
+        Run configuration providing the per-kind patterns and the
+        report-label-to-column map.
+
+    Returns
+    -------
+    list of dict
+        One audit row per source folder, in the same order as
+        ``folders``.
+    """
+    print("\nAuditing source folders against expected patterns...")
+    rows = []
+    for rec in tqdm(folders, desc="Auditing", unit="folder"):
+        kind = rec['kind']
+        patterns = cfg.patterns_for(kind)
+        counts = _scan_folder_counts(rec['source'], patterns)
+        row = {
+            'kind':          kind,
+            'sensor':        rec['sensor'],
+            'group_label':   rec['group_label'],
+            'label':         rec['label'],
+            'source_path':   str(rec['source']),
+            'output_path':   str(rec['out_dir']),
+            'source_exists': rec['source'].is_dir(),
+        }
+        for col, _, _ in patterns:
+            row[col] = counts[col]
+        reported = missing_map.get(rec['label'].lower(), [])
+        row['reported_missing'] = '; '.join(reported)
+        confirmed, false_positives = [], []
+        for item in reported:
+            cols = cfg.report_to_columns.get(item.strip().lower())
+            if not cols:
+                false_positives.append(f'?{item}')
+                continue
+            raw_total = sum(counts.get(c, 0) for c in cols)
+            if raw_total == 0:
+                confirmed.append(item)
+            else:
+                false_positives.append(
+                    f'{item} (raw has {raw_total} file(s) in '
+                    f'{"/".join(cols)})')
+        row['confirmed_missing_in_raw'] = '; '.join(confirmed)
+        row['present_in_raw_not_collected'] = '; '.join(false_positives)
+        rows.append(row)
+    return rows
+
+
+def _write_audit_manifest(path, audit_rows, kind, patterns):
+    """Write the per-kind audit manifest CSV (``manifest_<kind>.csv``).
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Output CSV path.
+    audit_rows : list of dict
+        All audit rows produced by :func:`_audit_folders`.
+    kind : str
+        Either ``'graw'`` or ``'gpro'``; rows are filtered by this.
+    patterns : list of (str, str, str)
+        Pattern definitions for ``kind``; only their column names are
+        used here.
+    """
+    pattern_cols = [c for c, _, _ in patterns]
+    header = (['sensor', 'group_label', 'label', 'source_path',
+               'output_path', 'source_exists']
+              + pattern_cols
+              + ['reported_missing', 'confirmed_missing_in_raw',
+                 'present_in_raw_not_collected'])
+    rows = [r for r in audit_rows if r['kind'] == kind]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', newline='', encoding='utf-8') as fh:
+        writer = csv.DictWriter(fh, fieldnames=header)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row.get(k, '') for k in header})
+
+
+def _print_audit_summary(audit_rows, missing_map, cfg):
+    """Print a per-pattern absence summary and any report discrepancies.
+
+    Parameters
+    ----------
+    audit_rows : list of dict
+        All audit rows produced by :func:`_audit_folders`.
+    missing_map : dict
+        Parsed recipient report (may be empty).
+    cfg : CollectionConfig
+        Run configuration providing the per-kind pattern lists.
+    """
+    for kind, patterns in (('graw', cfg.graw_patterns),
+                           ('gpro', cfg.gpro_patterns)):
+        rows = [r for r in audit_rows if r['kind'] == kind]
+        if not rows:
+            continue
+        print(f"\n=== {kind} audit ({len(rows)} folders) ===")
+        for col, _, _ in patterns:
+            absent = sum(1 for r in rows if r.get(col, 0) == 0)
+            print(f"  {col:30s}  absent in raw: {absent:4d} / {len(rows)}")
+
+    if not missing_map:
+        return
+
+    matched = sum(1 for r in audit_rows if r.get('reported_missing'))
+    unmatched = (set(missing_map.keys())
+                 - {r['label'].lower() for r in audit_rows})
+    print("\n=== Cross-check vs recipient report ===")
+    print(f"Manifest rows that match a report entry: {matched}")
+    if unmatched:
+        print(f"Report entries with no matching manifest row "
+              f"({len(unmatched)}):")
+        for k in sorted(unmatched):
+            print(f"  - {k}")
+    discrepancies = [r for r in audit_rows
+                     if r.get('present_in_raw_not_collected')]
+    if discrepancies:
+        print(f"\nFolders where the report flagged items that DO exist in "
+              f"raw (collection script bug?) -- {len(discrepancies)}:")
+        for r in discrepancies:
+            print(f"  {r['label']}")
+            print(f"    -> {r['present_in_raw_not_collected']}")
+    else:
+        print("\nNo discrepancies: every reported-missing item is also "
+              "absent in raw.")
 
 
 if __name__ == '__main__':
