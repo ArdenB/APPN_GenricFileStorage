@@ -18,6 +18,25 @@
 - **R8** — Prefer existing helpers in `functions.corefunctions` (e.g. `storagefinder`, `pymkdir`, `writemetadata`, `gitmetadata`) over re-implementing them.
 - **R9** — Don't add `try/except` around code unless a *specific* failure mode is being handled. No bare `except:`.
 
+## 1a. Decision ladder — before writing code (should follow)
+
+Stop at the first rung that holds — after reading the code the change
+touches, never instead of it:
+
+1. Does this need to exist?               → no: skip it (YAGNI)
+2. Already in `functions/`?               → import it, don't rewrite (R8)
+3. Stdlib does it?                        → use it
+4. Scientific stack does it?              → use it (numpy/pandas/xarray/geopandas beat hand-rolled loops)
+5. Already an installed dependency?       → use it before adding a new one
+6. A few lines?                           → a few lines — not a class, not a wrapper
+7. Only then: the minimum that works
+
+The ladder is a SHOULD; rungs 2 and 4 overlap MUSTs (R8). Minimal governs
+what gets built *above the floor*, never the floor itself: the canonical
+template, docstrings + type hints, argparse, provenance metadata, and
+dry-run/confirmation layers on destructive operations are never on the
+chopping block.
+
 ## 2. Soft preferences
 
 - **P1** — Section banners use `# ========== Title ==========` for major sections and `# +++++ subnote +++++` for inline subsections. Function separators use a line of `=` (~80 chars).
