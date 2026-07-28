@@ -204,7 +204,17 @@ def Sitebuilder(flog_fname, df_flog, index, frow, check, site, project, node, ar
         # Don't overwrite existing tables; users may have added extra columns.
         if not os.path.isfile(run_overview_fname):
             run_names = [f"run_{runNo:02d}" for runNo in np.arange(frow.Runs)]
-            run_cols: dict[str, list] = {"RunFailed": [False] * len(run_names)}
+            # Per-run status trigger bools:
+            #   RunFailed  — no recoverable data for the entire run
+            #   Issues     — something went wrong but recoverable data exists
+            #                (partial payload loss, QC failures, degraded quality)
+            #   Deviations — no fault, but the capture plan deviated from the
+            #                standard full capture (e.g. intended RGB-only run)
+            run_cols: dict[str, list] = {
+                "RunFailed": [False] * len(run_names),
+                "Issues": [False] * len(run_names),
+                "Deviations": [False] * len(run_names),
+            }
             # FIELDOBS runs need an extra column to record the type of field data captured.
             if frow.Sensor == "FIELDOBS":
                 run_cols["FieldDataType"] = [""] * len(run_names)
@@ -214,6 +224,20 @@ def Sitebuilder(flog_fname, df_flog, index, frow, check, site, project, node, ar
             if not args.no_git:
                 repo.git.add(run_overview_fname)
                 gitmod = True
+        else:
+            # Propagate newly specced status columns to existing tables,
+            # never touching existing values or user-added columns.
+            df_runs = pd.read_csv(run_overview_fname, index_col="Run")
+            status_cols = ["RunFailed", "Issues", "Deviations"]
+            missing_cols = [c for c in status_cols if c not in df_runs.columns]
+            if missing_cols:
+                for col in missing_cols:
+                    df_runs[col] = False
+                df_runs.to_csv(run_overview_fname)
+                print(f"Added status column(s) {missing_cols} to {run_overview_fname}")
+                if not args.no_git:
+                    repo.git.add(run_overview_fname)
+                    gitmod = True
 
     # +++++ Write the resolved True/False back into the field log +++++
     # Compare against the existing values to detect whether the CSV needs updating.

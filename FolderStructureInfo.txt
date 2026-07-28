@@ -54,6 +54,17 @@ node
 # - All auto files are created and maintained by ProjectBuilder.py.
 # - FieldNotes.txt and RunOverview.csv are skipped when the corresponding
 #   FieldLog.csv row sets MakeNotesFile / MakeTableFile to False.
+# - RunOverview.csv has one row per run_XX and three status trigger bools
+#   (all default False; ProjectBuilder appends missing columns to existing
+#   tables without touching values or user-added columns):
+#     RunFailed  - no recoverable data for the entire run (may be set late,
+#                  e.g. a GNSS failure only found during processing)
+#     Issues     - something went wrong but recoverable data exists
+#                  (partial sub-sensor loss, QC failures, degraded quality)
+#     Deviations - no fault, but the capture plan deviated from the standard
+#                  full capture (e.g. an intended RGB-only flight)
+#   Decision rule: planned it that way -> Deviations; went wrong but kept
+#   data -> Issues; run is a write-off -> RunFailed. Bools may combine.
 # - Site-level Documentation/Plot_Layout/ and Documentation/Trial_Info/
 #   are auto-created at each site; their README.md stubs are seeded once
 #   and never overwritten. See the Plot Delineation protocol for the
