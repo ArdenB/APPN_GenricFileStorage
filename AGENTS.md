@@ -9,7 +9,7 @@
 ## 1. Hard rules (must follow)
 
 - **R1** — All executable code lives inside functions. **No top-level work** other than imports, `__title__`/`__author__` metadata, and the `if __name__ == "__main__":` block.
-- **R2** — **No global variables.** Pass everything via function arguments. The only allowed module-level names are: imports, dunder metadata, and constants in `UPPER_SNAKE_CASE` that are truly immutable.
+- **R2** — **Functions have no hidden inputs.** Everything a function uses arrives through its signature, is defined inside it, or is fetched by an explicit call — bodies never read bare module-level names. No module-level data of any kind (including `UPPER_SNAKE_CASE` "constants"): tunables → argparse → `main()` → arguments; overridable defaults → inline signature defaults (immutable only; repo-relative paths fine, absolute never); fixed facts (physical constants, unit conversions) → a function/frozen dataclass that callers invoke; local details → inside the function. The only allowed module-level names are: imports, dunder metadata, and the git-root bootstrap variable needed to add the repo to `sys.path`.
 - **R3** — `main()` is defined **at the top of the file**, immediately after imports. It reads like pseudocode; complex logic lives in helper functions below.
 - **R4** — All functions use **NumPy-style docstrings** with `Parameters`, `Returns`, and (when relevant) `Raises` / `Notes` sections. Include type hints on signatures.
 - **R5** — Scripts run from the **git repo root**. The git root is resolved with `gitpython` and added to `sys.path` **at module top** (before any `functions.*` imports), and the `__main__` block `chdir`s into it before calling `main()`. All paths in code are relative to the repo root or come from CLI args.
@@ -52,7 +52,7 @@ chopping block.
 
 ## 3. Forbidden patterns
 
-- ❌ Mutable module-level state (`results = []` at top level, then appended inside functions).
+- ❌ Module-level data of any kind (`results = []` at top level, `UPPER_SNAKE_CASE` "constants", paths under the imports).
 - ❌ Importing `*`.
 - ❌ `os.chdir` inside `main()` or helper functions (only allowed in `__main__`).
 - ❌ Hard-coded absolute paths (`/mnt/d/...`) in committed code. Use args / `storagefinder`.
