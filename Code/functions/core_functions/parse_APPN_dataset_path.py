@@ -49,6 +49,13 @@ def parse_APPN_dataset_path(
     ------
     ValueError
         If ``path_level`` is invalid.
+
+    Notes
+    -----
+    Parsing is pure string manipulation. Filesystem checks (confirming date
+    folders exist at the expected depth for levels above ``date``, and the
+    root/node auto-detection glob) only run when ``path`` exists on disk;
+    nonexistent paths are validated by name shape alone.
     """
     valid_levels = {"auto", "root", "node", "project", "site", "sensor", "date", "run", "tier", "sub_tier"}
     if path_level not in valid_levels:
@@ -279,15 +286,15 @@ def parse_APPN_dataset_path(
         ("project",     "project", "a project folder (e.g. '2025_Chickpea')"),
         ("node",        "other",   "a node folder (e.g. 'USYD_Narrabri')"),
     ]
-    # Only validate hierarchy alignment when every upper layer was
-    # populated (i.e. the input is at or below sensor level). For
-    # shallower path_levels we don't have enough information to detect
-    # missing/extra layers and shouldn't flag them.
+    # When every upper layer is populated (input at or below sensor level)
+    # the full chain can be checked for missing/inserted layers. For
+    # shallower path_levels only the shape of each populated name can be
+    # validated individually.
     _all_populated = all(parsed[lvl] is not None for lvl, _, _ in _hierarchy)
     _populated = [
         (lvl, exp, desc, parsed[lvl], _shape(parsed[lvl]))
         for lvl, exp, desc in _hierarchy if parsed[lvl] is not None
-    ] if _all_populated else []
+    ]
     _actual = [s for *_, s in _populated]
     _expected = [exp for _, exp, _ in _hierarchy]
     _layout_hint = ("Expected layout: "
@@ -298,7 +305,7 @@ def parse_APPN_dataset_path(
             return False
         return all(a == b for a, b in zip(actual, expected))
 
-    if _populated and not _seq_match(_actual, _expected):
+    if _all_populated and not _seq_match(_actual, _expected):
         diagnosed = False
         # Single missing layer: actual chain looks like expected with one
         # element dropped, then everything shifts root-ward (an extra
@@ -353,6 +360,19 @@ def parse_APPN_dataset_path(
                 )
                 valid = False
 
+    elif not _all_populated:
+        # Partial chain (path_level above sensor): validate each populated
+        # name's shape individually.
+        for lvl, exp, desc, name, actual_shape in _populated:
+            if actual_shape == exp or exp == "other":
+                continue
+            hint = (f" (looks like a {actual_shape} folder)"
+                    if actual_shape and actual_shape not in ("other", exp) else "")
+            errors.append(
+                f"Expected {desc} at the '{lvl}' position but got '{name}'{hint}."
+            )
+            valid = False
+
     # Levels that require certain predictable fields to be present
     if path_level in ("sub_tier", "tier", "run", "date") and (parsed["date"] is None or pd.isna(parsed["date"])):
         valid = False
@@ -369,8 +389,10 @@ def parse_APPN_dataset_path(
 
     # For levels above date, check that at least one valid date folder exists at the expected depth.
     # Structure: root / node / project / site / sensor / date
+    # Only possible when the path exists on disk; nonexistent paths are
+    # validated by name shape alone so parsing stays machine-independent.
     _date_depth = {"sensor": 1, "site": 2, "project": 3, "node": 4, "root": 5}
-    if valid and path_level in _date_depth:
+    if valid and path_level in _date_depth and pth.is_dir():
         depth = _date_depth[path_level]
         _prefix = ["*"] * (depth - 1)
         glob_pattern_8 = "/".join(_prefix + ["????????"])

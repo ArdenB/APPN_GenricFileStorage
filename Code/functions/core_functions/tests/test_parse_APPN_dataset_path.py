@@ -1,21 +1,16 @@
 """Tests for parse_APPN_dataset_path.
 
-Tests every explicit path_level using real folder paths across all three storage roots,
-plus auto-detection behaviour.  Two tests are marked xfail because they expose a known
-bug: when auto mode finds a date node in a *parent* directory (i.e. the input path is
-inside a run or T-subfolder), the subsequent ``elif path_level == "date":`` block at the
-bottom of the function re-processes the original *input* path (not the detected date
-node), overwriting every field with wrong values.
+Tests every explicit path_level plus auto-detection behaviour.
+
+All paths are fake and nothing is created on disk: the parser only performs
+filesystem checks (date-folder depth validation, root/node auto-detection
+globs) when the input path actually exists, and falls back to pure
+name-shape validation otherwise — so the suite runs identically on any
+machine.
 
 Run with:
     conda activate fire
-    cd /mnt/d/APPN-42-datastorage
-    pytest Code/DS03_PlotExtractionCode/test_parse_APPN_dataset_path.py -v
-
-Storage roots used (Tier3 2025_Merinda excluded - malformed, no site folder level):
-    /mnt/d/APPN-42-datastorage
-    /mnt/d/Tier2_DataArchive
-    /mnt/d/Tier3_ColdStorage
+    pytest Code/functions/core_functions/tests/test_parse_APPN_dataset_path.py -v
 """
 
 import pathlib
@@ -34,11 +29,13 @@ if str(_REPO_ROOT) not in sys.path:
 from Code.functions.core_functions import parse_APPN_dataset_path  # type: ignore # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Storage roots
+# Storage roots — fake paths that must NOT exist on disk (the parser skips
+# filesystem validation for nonexistent paths)
 # ---------------------------------------------------------------------------
-APPN  = pathlib.Path("/mnt/d/APPN-42-datastorage")
-TIER2 = pathlib.Path("/mnt/d/Tier2_DataArchive")
-TIER3 = pathlib.Path("/mnt/d/Tier3_ColdStorage")
+_FAKE_STORAGE = pathlib.Path("/mnt/z/FakeStorage")
+APPN  = _FAKE_STORAGE / "APPN-42-datastorage"
+TIER2 = _FAKE_STORAGE / "Tier2_DataArchive"
+TIER3 = _FAKE_STORAGE / "Tier3_ColdStorage"
 
 
 def _ts(date_str: str) -> pd.Timestamp:
@@ -74,6 +71,9 @@ def test_root_level_explicit(root):
 
 # ===========================================================================
 # 2b. Root level  (auto-detect — no path_level argument)
+#
+# With nonexistent paths the content glob finds nothing and auto mode falls
+# back to 'root' for names that match no other level pattern.
 # ===========================================================================
 @pytest.mark.parametrize("root", [APPN, TIER2, TIER3])
 def test_root_level_auto(root):
